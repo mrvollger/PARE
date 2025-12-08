@@ -6,6 +6,19 @@ min_version("8.0")
 include: "rules/common.smk"
 
 
+# Global wildcard constraints based on actual sample IDs
+wildcard_constraints:
+    sample_id="|".join(get_all_sample_ids()),
+
+
+include: "rules/extract_sequences.smk"
+include: "rules/align.smk"
+
+
 rule all:
     input:
-        [],
+        # Final filtered alignments for each assembly
+        expand(
+            rules.filter_alignments.output.paf,
+            sample_id=get_all_sample_ids(),
+        ),

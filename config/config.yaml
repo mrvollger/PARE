@@ -1,1 +1,35 @@
-sample: "a"
+# PARE: Paralog And allelic Regulatory Element pipeline
+# Configuration file
+
+# REQUIRED: Table with assembly and RE bed file information
+# TSV format with columns: sample, haplotype, assembly, re_bed
+# Example:
+# sample  haplotype  assembly  re_bed
+# HG002   hap1       /path/to/HG002.hap1.fa   /path/to/HG002.hap1.peaks.bed
+# HG002   hap2       /path/to/HG002.hap2.fa   /path/to/HG002.hap2.peaks.bed
+sample_table: "config/samples.tsv"
+# OPTIONAL: Override default parameters below
+# All parameters have sensible defaults defined in workflow/rules/common.smk
+# Uncomment and modify only the parameters you want to change
+
+# alignment:
+#   min_identity: 80        # Minimum alignment identity (0-100)
+#   min_coverage: 80        # Minimum alignment coverage of query (0-100)
+#   tool: "minimap2"        # Tool to use: "minimap2" or "blat"
+#   threads: 8              # Number of threads for alignment
+#   minimap_preset: "asm20" # Minimap2 preset (sr, asm5, asm20)
+#   max_secondary: 100      # Maximum number of secondary alignments (-N)
+#   secondary_threshold: 0.8  # Secondary threshold (-p)
+#   kmer_size: 15           # k-mer size for minimap2
+#   window_size: 10         # Window size for minimap2
+
+# clustering:
+#   allelic_distance: 10000    # Max distance (bp) for allelic REs
+#   reciprocal_overlap: 0.5    # Min reciprocal overlap for alleles
+#   method: "graph"            # Clustering method: "pairwise" or "graph"
+
+# filtering:
+#   min_re_length: 100      # Minimum RE length to include (bp)
+#   max_re_length: 10000    # Maximum RE length to include (bp)
+#   skip_repeats: false     # Skip REs overlapping repeat-masked regions
+#   slop: 500               # Flanking sequence to add on each side (bp)

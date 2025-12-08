@@ -1,0 +1,5 @@
+sample	haplotype	assembly	re_bed
+HG002	hap1	data/assemblies/HG002.hap1.fa	data/peaks/HG002.hap1.peaks.bed
+HG002	hap2	data/assemblies/HG002.hap2.fa	data/peaks/HG002.hap2.peaks.bed
+HG00733	hap1	data/assemblies/HG00733.hap1.fa	data/peaks/HG00733.hap1.peaks.bed
+HG00733	hap2	data/assemblies/HG00733.hap2.fa	data/peaks/HG00733.hap2.peaks.bed

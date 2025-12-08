@@ -3,7 +3,6 @@ channels:
   - conda-forge
   - defaults
 dependencies:
-  - snakemake
-  - snakefmt
-  - black
-  - snakedeploy
+  - python >=3.9
+  - pandas >=1.5
+  - numpy >=1.23

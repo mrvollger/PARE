@@ -1,4 +1,4 @@
-[project]
+[workspace]
 authors = ["Mitchell R. Vollger <mrvollger@gmail.com>"]
 channels = ["conda-forge", "bioconda"]
 description = "Add a short description here"
@@ -9,15 +9,15 @@ version = "0.0.1"
 [tasks]
 fmt = "ruff format . && taplo format pixi.toml && snakefmt workflow/"
 test = { cmd = [
-  "snakemake",
-  # once established you can add more arguments with your test data here
+    "snakemake",
+    # once established you can add more arguments with your test data here
 ] }
 snakemake = { cmd = "cd $INIT_CWD && snakemake -s $PIXI_PROJECT_ROOT/workflow/Snakefile" }
 
 
 [dependencies]
 conda = "*"
-snakemake = "==8.21"
+snakemake = "==9.14"
 snakefmt = "*"
 ruff = "*"
 taplo = "*"
