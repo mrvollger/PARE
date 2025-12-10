@@ -13,6 +13,7 @@ wildcard_constraints:
 
 include: "rules/extract_sequences.smk"
 include: "rules/align.smk"
+include: "rules/graph.smk"
 
 
 rule all:
@@ -22,3 +23,5 @@ rule all:
             rules.filter_alignments.output.paf,
             sample_id=get_all_sample_ids(),
         ),
+        # Graph visualization
+        rules.paf_to_graphml.output.graph,

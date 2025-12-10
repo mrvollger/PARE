@@ -246,6 +246,113 @@ class PAFRecord:
         query_aln_len = self.query_end - self.query_start
         return (query_aln_len / self.query_length) * 100
 
+    def parse_re_id(self) -> Optional[Dict[str, Any]]:
+        """
+        Parse RE (regulatory element) ID from id:Z tag to extract chromosome and coordinates.
+
+        Format: chrom_start_end
+        Example: chr20_MATERNAL_13652400_13652567
+
+        Returns:
+            Dictionary with 'chrom', 'start', 'end' keys, or None if parsing fails
+        """
+        if not self.re_id:
+            return None
+
+        # Match pattern: chrom_start_end (everything before last two underscores is chrom)
+        match = re.match(r'^(.+)_(\d+)_(\d+)$', self.re_id)
+        if not match:
+            return None
+
+        return {
+            'chrom': match.group(1),
+            'start': int(match.group(2)),
+            'end': int(match.group(3)),
+        }
+
+    def calculate_re_coverage(self) -> float:
+        """
+        Calculate coverage as percentage of original RE length.
+
+        The RE (regulatory element) length is extracted from the id:Z tag
+        which has format: chrom_start_end
+
+        Returns:
+            Coverage percentage (0.0 if RE ID not found or invalid)
+        """
+        re_info = self.parse_re_id()
+        if not re_info:
+            return 0.0
+
+        re_length = re_info['end'] - re_info['start']
+        if re_length == 0:
+            return 0.0
+
+        return (self.num_matches / re_length) * 100
+
+    def calculate_self_overlap(self) -> int:
+        """
+        Calculate overlap between query and target positions within this record.
+        This is different from query_overlap() which compares two different records.
+
+        Overlap is 0 if chromosomes are different.
+
+        Returns:
+            Number of overlapping bases between query and target positions
+        """
+        if self.query_name != self.target_name:
+            return 0
+
+        overlap_start = max(self.query_start, self.target_start)
+        overlap_end = min(self.query_end, self.target_end)
+        return max(0, overlap_end - overlap_start)
+
+    def classify_alignment(self) -> str:
+        """
+        Classify alignment as self, paralog, allelic, ortholog, or unknown.
+
+        Classification rules:
+          - self: Same chromosome, same position
+          - paralog: Same sample AND same haplotype, different position/chromosome
+          - allelic: Same sample, different haplotype
+          - ortholog: Different samples (cross-sample alignment)
+          - unknown: Unable to determine sample/haplotype
+
+        Returns:
+            One of 'self', 'allelic', 'paralog', 'ortholog', or 'unknown'
+        """
+        # Self alignment: same chromosome and same positions
+        if self.query_name == self.target_name:
+            if (self.query_start == self.target_start and
+                self.query_end == self.target_end):
+                return 'self'
+            else:
+                # Same chromosome but different position = paralog
+                return 'paralog'
+
+        # Different chromosomes - check sample and haplotype
+        # Check if we can determine samples
+        if self.query_sample == 'unknown' or self.target_sample == 'unknown':
+            return 'unknown'
+
+        # Cross-sample alignment: ortholog
+        if self.query_sample != self.target_sample:
+            return 'ortholog'
+
+        # Same sample - check haplotypes
+        if self.query_haplotype == 'unknown' or self.target_haplotype == 'unknown':
+            return 'unknown'
+
+        # Allelic alignment: Same sample, different haplotypes
+        if self.query_haplotype != self.target_haplotype:
+            return 'allelic'
+
+        # Paralog: Same sample, same haplotype, different position/chromosome
+        if self.query_haplotype == self.target_haplotype:
+            return 'paralog'
+
+        return 'unknown'
+
     @property
     def query_sample(self) -> str:
         """Extract sample ID from query name."""
