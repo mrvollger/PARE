@@ -9,7 +9,9 @@ rule merge_all_re_sequences:
     Sequence names already contain sample_id prefix from bedtools getfasta -name
     """
     input:
-        fastas=expand("temp/sequences/{sample_id}.re_sequences.fa", sample_id=get_all_sample_ids()),
+        fastas=expand(
+            rules.extract_re_sequences.output.fasta, sample_id=get_all_sample_ids()
+        ),
     output:
         fasta="temp/merged_re_sequences.fa",
     log:
@@ -35,7 +37,7 @@ rule align_all_res_to_assembly:
     -k/-w: k-mer and window size optimized for short sequences
     """
     input:
-        query="temp/merged_re_sequences.fa",
+        query=rules.merge_all_re_sequences.output.fasta,
         target=get_assembly,
     output:
         paf=temp("temp/alignments/all_REs_vs_{sample_id}.paf"),
@@ -79,8 +81,8 @@ rule adjust_paf_coordinates:
     and adjusts coordinates to represent positions on the full chromosome.
     """
     input:
-        paf="temp/alignments/all_REs_vs_{sample_id}.paf",
-        fai="temp/merged_assemblies.fai",
+        paf=rules.align_all_res_to_assembly.output.paf,
+        fai=rules.merge_assembly_fais.output.fai,
     output:
         paf=temp("temp/alignments/all_REs_vs_{sample_id}.adjusted.paf"),
     log:
@@ -103,8 +105,8 @@ rule liftover_trim_alignments:
     and trims both coordinates and CIGAR strings accordingly.
     """
     input:
-        paf="temp/alignments/all_REs_vs_{sample_id}.adjusted.paf",
-        bed="temp/merged_re_sequences.bed",
+        paf=rules.adjust_paf_coordinates.output.paf,
+        bed=rules.merge_unslopped_beds.output.bed,
     output:
         paf=temp("temp/alignments/all_REs_vs_{sample_id}.trimmed.paf"),
     log:
@@ -135,7 +137,7 @@ rule filter_alignments:
     Output PAF format with filtered alignments and ct:Z: classification tag.
     """
     input:
-        paf="temp/alignments/all_REs_vs_{sample_id}.trimmed.paf",
+        paf=rules.liftover_trim_alignments.output.paf,
     output:
         paf="results/filtered_alignments/all_REs_vs_{sample_id}.paf",
     log:

@@ -19,11 +19,11 @@ def main():
     passed = 0
     total = 0
     classification_counts = {
-        'self': 0,
-        'allelic': 0,
-        'paralog': 0,
-        'ortholog': 0,
-        'unknown': 0
+        "self": 0,
+        "allelic": 0,
+        "paralog": 0,
+        "ortholog": 0,
+        "unknown": 0,
     }
 
     # Read PAF file using PAFReader
@@ -45,13 +45,12 @@ def main():
             classification_counts[classification] += 1
 
             # Add classification and overlap tags to the record
-            record.tags['ct'] = classification
-            record.tags['ov'] = overlap
-            record.tags['ts'] = record.target_sample
-            record.tags['qs'] = record.query_sample
-            record.tags['th'] = record.target_haplotype
-            record.tags['qh'] = record.query_haplotype
-            
+            record.tags["ct"] = classification
+            record.tags["ov"] = overlap
+            record.tags["ts"] = record.target_sample
+            record.tags["qs"] = record.query_sample
+            record.tags["th"] = record.target_haplotype
+            record.tags["qh"] = record.query_haplotype
 
             filtered_records.append(record)
             passed += 1

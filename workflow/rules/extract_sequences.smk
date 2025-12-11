@@ -79,14 +79,59 @@ rule merge_assembly_fais:
         """
 
 
+rule filter_re_against_sd:
+    """
+    Filter RE BED file to exclude regions overlapping segmental duplications.
+    Only runs if filtering.sd_bed is configured.
+    """
+    input:
+        re_bed=rules.extract_re_sequences.output.bed,
+        sd_bed=config["filtering"].get("sd_bed", []),
+    output:
+        bed=temp("temp/sequences/{sample_id}.re_sequences.sd_filtered.bed"),
+    log:
+        "logs/filter_sd/{sample_id}.log",
+    conda:
+        "../envs/bfx.yml"
+    threads: 1
+    resources:
+        mem_mb=2048,
+        runtime=10,
+    shell:
+        """
+        # Remove REs that overlap with segmental duplications
+        bedtools intersect \
+            -a {input.re_bed} \
+            -b {input.sd_bed} \
+            -v \
+            > {output.bed} 2> {log}
+        """
+
+
+def get_re_beds_for_merge():
+    """
+    Return the appropriate RE BED files for merging.
+    Uses SD-filtered beds if sd_bed is configured, otherwise uses unfiltered beds.
+    """
+    if sd_filtering_enabled():
+        return expand(
+            rules.filter_re_against_sd.output.bed, sample_id=get_all_sample_ids()
+        )
+    else:
+        return expand(
+            rules.extract_re_sequences.output.bed, sample_id=get_all_sample_ids()
+        )
+
+
 rule merge_unslopped_beds:
     """
     Merge all unslopped (exact) RE BED files for liftover trimming.
     Format for rb liftover --qbed: chrom, start, end, name
     where chrom matches the adjusted PAF query name (chromosome).
+    Uses SD-filtered beds if filtering.sd_bed is configured.
     """
     input:
-        beds=expand("temp/sequences/{sample_id}.re_sequences.bed", sample_id=get_all_sample_ids()),
+        beds=get_re_beds_for_merge,
     output:
         bed=temp("temp/merged_re_sequences.bed"),
     log:

@@ -28,32 +28,27 @@ def parse_contig_name(contig_name: str) -> Dict[str, str]:
     Returns:
         Dictionary with 'sample', 'haplotype', 'chrom' keys
     """
-    result = {
-        'sample': 'unknown',
-        'haplotype': 'unknown',
-        'chrom': contig_name
-    }
+    result = {"sample": "unknown", "haplotype": "unknown", "chrom": contig_name}
 
     # Pattern 1: Sample#hap#contig format (e.g., HG00097#1#CM094075.1)
-    match = re.match(r'^([^#]+)#([12])#(.+)$', contig_name)
+    match = re.match(r"^([^#]+)#([12])#(.+)$", contig_name)
     if match:
-        result['sample'] = match.group(1)
-        result['haplotype'] = f"hap{match.group(2)}"
-        result['chrom'] = match.group(3)
+        result["sample"] = match.group(1)
+        result["haplotype"] = f"hap{match.group(2)}"
+        result["chrom"] = match.group(3)
         return result
 
     # Pattern 2: Check for PATERNAL/MATERNAL or h1/h2 indicators
     if "_PATERNAL" in contig_name:
-        result['sample'] = 'HG002'  # Default sample for this pattern
-        result['haplotype'] = 'hap1'
-        result['chrom'] = contig_name.replace("_PATERNAL", "")
+        result["sample"] = "HG002"  # Default sample for this pattern
+        result["haplotype"] = "hap1"
+        result["chrom"] = contig_name.replace("_PATERNAL", "")
     elif "_MATERNAL" in contig_name:
-        result['sample'] = 'HG002'  # Default sample for this pattern
-        result['haplotype'] = 'hap2'
-        result['chrom'] = contig_name.replace("_MATERNAL", "")
+        result["sample"] = "HG002"  # Default sample for this pattern
+        result["haplotype"] = "hap2"
+        result["chrom"] = contig_name.replace("_MATERNAL", "")
 
     return result
-
 
 
 @dataclass
@@ -72,6 +67,7 @@ class PAFRecord:
         ov:i: - Overlap between query and target positions
         cg:Z: - CIGAR string
     """
+
     # Standard PAF fields
     query_name: str
     query_length: int
@@ -90,12 +86,12 @@ class PAFRecord:
     tags: Dict[str, Any]
 
     @classmethod
-    def from_line(cls, line: str) -> Optional['PAFRecord']:
+    def from_line(cls, line: str) -> Optional["PAFRecord"]:
         """Parse a PAF line into a PAFRecord object."""
-        if line.startswith('#') or not line.strip():
+        if line.startswith("#") or not line.strip():
             return None
 
-        fields = line.strip().split('\t')
+        fields = line.strip().split("\t")
         if len(fields) < 12:
             return None
 
@@ -117,16 +113,16 @@ class PAFRecord:
             # Parse tags (field 12 onwards)
             tags = {}
             for field in fields[12:]:
-                match = re.match(r'([^:]+):([^:]+):(.+)', field)
+                match = re.match(r"([^:]+):([^:]+):(.+)", field)
                 if match:
                     tag_name = match.group(1)
                     tag_type = match.group(2)
                     tag_value = match.group(3)
 
                     # Convert based on type
-                    if tag_type == 'i':
+                    if tag_type == "i":
                         tags[tag_name] = int(tag_value)
-                    elif tag_type == 'f':
+                    elif tag_type == "f":
                         tags[tag_name] = float(tag_value)
                     else:  # Z, A, etc.
                         tags[tag_name] = tag_value
@@ -144,7 +140,7 @@ class PAFRecord:
                 num_matches=num_matches,
                 alignment_block_length=alignment_block_length,
                 mapping_quality=mapping_quality,
-                tags=tags
+                tags=tags,
             )
         except (ValueError, IndexError):
             return None
@@ -152,27 +148,27 @@ class PAFRecord:
     def to_dict(self) -> Dict[str, Any]:
         """Convert PAF record to dictionary."""
         d = {
-            'query_name': self.query_name,
-            'query_length': self.query_length,
-            'query_start': self.query_start,
-            'query_end': self.query_end,
-            'strand': self.strand,
-            'target_name': self.target_name,
-            'target_length': self.target_length,
-            'target_start': self.target_start,
-            'target_end': self.target_end,
-            'num_matches': self.num_matches,
-            'alignment_block_length': self.alignment_block_length,
-            'mapping_quality': self.mapping_quality,
+            "query_name": self.query_name,
+            "query_length": self.query_length,
+            "query_start": self.query_start,
+            "query_end": self.query_end,
+            "strand": self.strand,
+            "target_name": self.target_name,
+            "target_length": self.target_length,
+            "target_start": self.target_start,
+            "target_end": self.target_end,
+            "num_matches": self.num_matches,
+            "alignment_block_length": self.alignment_block_length,
+            "mapping_quality": self.mapping_quality,
         }
         # Add tags as separate columns
         d.update(self.tags)
 
         # Add computed sample/haplotype columns
-        d['query_sample'] = self.query_sample
-        d['query_haplotype'] = self.query_haplotype
-        d['target_sample'] = self.target_sample
-        d['target_haplotype'] = self.target_haplotype
+        d["query_sample"] = self.query_sample
+        d["query_haplotype"] = self.query_haplotype
+        d["target_sample"] = self.target_sample
+        d["target_haplotype"] = self.target_haplotype
 
         return d
 
@@ -203,35 +199,35 @@ class PAFRecord:
         for tag_name, tag_value in sorted(self.tags.items()):
             # Determine tag type
             if isinstance(tag_value, int):
-                tag_type = 'i'
+                tag_type = "i"
             elif isinstance(tag_value, float):
-                tag_type = 'f'
+                tag_type = "f"
             else:
-                tag_type = 'Z'
+                tag_type = "Z"
 
             fields.append(f"{tag_name}:{tag_type}:{tag_value}")
 
-        return '\t'.join(fields)
+        return "\t".join(fields)
 
     @property
     def re_id(self) -> Optional[str]:
         """Get the RE ID from the id:Z: tag."""
-        return self.tags.get('id')
+        return self.tags.get("id")
 
     @property
     def classification(self) -> Optional[str]:
         """Get the classification from the ct:Z: tag."""
-        return self.tags.get('ct')
+        return self.tags.get("ct")
 
     @property
     def overlap(self) -> Optional[int]:
         """Get the overlap from the ov:i: tag."""
-        return self.tags.get('ov')
+        return self.tags.get("ov")
 
     @property
     def cigar(self) -> Optional[str]:
         """Get the CIGAR string from the cg:Z: tag."""
-        return self.tags.get('cg')
+        return self.tags.get("cg")
 
     def calculate_identity(self) -> float:
         """Calculate alignment identity as percentage."""
@@ -260,14 +256,14 @@ class PAFRecord:
             return None
 
         # Match pattern: chrom_start_end (everything before last two underscores is chrom)
-        match = re.match(r'^(.+)_(\d+)_(\d+)$', self.re_id)
+        match = re.match(r"^(.+)_(\d+)_(\d+)$", self.re_id)
         if not match:
             return None
 
         return {
-            'chrom': match.group(1),
-            'start': int(match.group(2)),
-            'end': int(match.group(3)),
+            "chrom": match.group(1),
+            "start": int(match.group(2)),
+            "end": int(match.group(3)),
         }
 
     def calculate_re_coverage(self) -> float:
@@ -284,7 +280,7 @@ class PAFRecord:
         if not re_info:
             return 0.0
 
-        re_length = re_info['end'] - re_info['start']
+        re_length = re_info["end"] - re_info["start"]
         if re_length == 0:
             return 0.0
 
@@ -323,67 +319,69 @@ class PAFRecord:
         """
         # Self alignment: same chromosome and same positions
         if self.query_name == self.target_name:
-            if (self.query_start == self.target_start and
-                self.query_end == self.target_end):
-                return 'self'
+            if (
+                self.query_start == self.target_start
+                and self.query_end == self.target_end
+            ):
+                return "self"
             else:
                 # Same chromosome but different position = paralog
-                return 'paralog'
+                return "paralog"
 
         # Different chromosomes - check sample and haplotype
         # Check if we can determine samples
-        if self.query_sample == 'unknown' or self.target_sample == 'unknown':
-            return 'unknown'
+        if self.query_sample == "unknown" or self.target_sample == "unknown":
+            return "unknown"
 
         # Cross-sample alignment: ortholog
         if self.query_sample != self.target_sample:
-            return 'ortholog'
+            return "ortholog"
 
         # Same sample - check haplotypes
-        if self.query_haplotype == 'unknown' or self.target_haplotype == 'unknown':
-            return 'unknown'
+        if self.query_haplotype == "unknown" or self.target_haplotype == "unknown":
+            return "unknown"
 
         # Allelic alignment: Same sample, different haplotypes
         if self.query_haplotype != self.target_haplotype:
-            return 'allelic'
+            return "allelic"
 
         # Paralog: Same sample, same haplotype, different position/chromosome
         if self.query_haplotype == self.target_haplotype:
-            return 'paralog'
+            return "paralog"
 
-        return 'unknown'
+        return "unknown"
 
     @property
     def query_sample(self) -> str:
         """Extract sample ID from query name."""
-        return parse_contig_name(self.query_name)['sample']
+        return parse_contig_name(self.query_name)["sample"]
 
     @property
     def query_haplotype(self) -> str:
         """Extract haplotype from query name."""
-        return parse_contig_name(self.query_name)['haplotype']
+        return parse_contig_name(self.query_name)["haplotype"]
 
     @property
     def query_chrom_parsed(self) -> str:
         """Extract parsed chromosome name from query name."""
-        return parse_contig_name(self.query_name)['chrom']
+        return parse_contig_name(self.query_name)["chrom"]
 
     @property
     def target_sample(self) -> str:
         """Extract sample ID from target name."""
-        return parse_contig_name(self.target_name)['sample']
+        return parse_contig_name(self.target_name)["sample"]
 
     @property
     def target_haplotype(self) -> str:
         """Extract haplotype from target name."""
-        return parse_contig_name(self.target_name)['haplotype']
+        return parse_contig_name(self.target_name)["haplotype"]
 
     @property
     def target_chrom_parsed(self) -> str:
         """Extract parsed chromosome name from target name."""
-        return parse_contig_name(self.target_name)['chrom']
+        return parse_contig_name(self.target_name)["chrom"]
 
-    def shares_re_id(self, other: 'PAFRecord') -> bool:
+    def shares_re_id(self, other: "PAFRecord") -> bool:
         """
         Check if two PAF records share the same RE ID.
 
@@ -395,7 +393,7 @@ class PAFRecord:
         """
         return self.re_id is not None and self.re_id == other.re_id
 
-    def query_overlap(self, other: 'PAFRecord') -> int:
+    def query_overlap(self, other: "PAFRecord") -> int:
         """
         Calculate overlap in query coordinates with another PAF record.
 
@@ -413,7 +411,7 @@ class PAFRecord:
         overlap_end = min(self.query_end, other.query_end)
         return max(0, overlap_end - overlap_start)
 
-    def target_overlap(self, other: 'PAFRecord') -> int:
+    def target_overlap(self, other: "PAFRecord") -> int:
         """
         Calculate overlap in target coordinates with another PAF record.
 
@@ -431,7 +429,7 @@ class PAFRecord:
         overlap_end = min(self.target_end, other.target_end)
         return max(0, overlap_end - overlap_start)
 
-    def has_query_overlap(self, other: 'PAFRecord', min_overlap: int = 1) -> bool:
+    def has_query_overlap(self, other: "PAFRecord", min_overlap: int = 1) -> bool:
         """
         Check if two PAF records have overlapping query coordinates.
 
@@ -444,7 +442,7 @@ class PAFRecord:
         """
         return self.query_overlap(other) >= min_overlap
 
-    def has_target_overlap(self, other: 'PAFRecord', min_overlap: int = 1) -> bool:
+    def has_target_overlap(self, other: "PAFRecord", min_overlap: int = 1) -> bool:
         """
         Check if two PAF records have overlapping target coordinates.
 
@@ -457,7 +455,7 @@ class PAFRecord:
         """
         return self.target_overlap(other) >= min_overlap
 
-    def reciprocal_query_overlap(self, other: 'PAFRecord') -> float:
+    def reciprocal_query_overlap(self, other: "PAFRecord") -> float:
         """
         Calculate reciprocal overlap in query coordinates.
 
@@ -477,7 +475,7 @@ class PAFRecord:
 
         return overlap / min_len
 
-    def reciprocal_target_overlap(self, other: 'PAFRecord') -> float:
+    def reciprocal_target_overlap(self, other: "PAFRecord") -> float:
         """
         Calculate reciprocal overlap in target coordinates.
 
@@ -519,7 +517,7 @@ class PAFReader:
 
     def __iter__(self):
         """Iterate through PAF records."""
-        with open(self.filename, 'r') as f:
+        with open(self.filename, "r") as f:
             for line in f:
                 record = PAFRecord.from_line(line)
                 if record:
@@ -564,34 +562,47 @@ class PAFReader:
         """
         # Standard PAF column names
         standard_cols = {
-            'query_name', 'query_length', 'query_start', 'query_end', 'strand',
-            'target_name', 'target_length', 'target_start', 'target_end',
-            'num_matches', 'alignment_block_length', 'mapping_quality'
+            "query_name",
+            "query_length",
+            "query_start",
+            "query_end",
+            "strand",
+            "target_name",
+            "target_length",
+            "target_start",
+            "target_end",
+            "num_matches",
+            "alignment_block_length",
+            "mapping_quality",
         }
 
         records = []
         for _, row in df.iterrows():
             # Extract standard fields
-            standard_fields = {col: row[col] for col in standard_cols if col in df.columns}
+            standard_fields = {
+                col: row[col] for col in standard_cols if col in df.columns
+            }
 
             # Extract tags (any non-standard columns)
             tags = {col: row[col] for col in df.columns if col not in standard_cols}
 
             # Create record
             record = PAFRecord(
-                query_name=standard_fields.get('query_name', ''),
-                query_length=int(standard_fields.get('query_length', 0)),
-                query_start=int(standard_fields.get('query_start', 0)),
-                query_end=int(standard_fields.get('query_end', 0)),
-                strand=standard_fields.get('strand', '+'),
-                target_name=standard_fields.get('target_name', ''),
-                target_length=int(standard_fields.get('target_length', 0)),
-                target_start=int(standard_fields.get('target_start', 0)),
-                target_end=int(standard_fields.get('target_end', 0)),
-                num_matches=int(standard_fields.get('num_matches', 0)),
-                alignment_block_length=int(standard_fields.get('alignment_block_length', 0)),
-                mapping_quality=int(standard_fields.get('mapping_quality', 0)),
-                tags=tags
+                query_name=standard_fields.get("query_name", ""),
+                query_length=int(standard_fields.get("query_length", 0)),
+                query_start=int(standard_fields.get("query_start", 0)),
+                query_end=int(standard_fields.get("query_end", 0)),
+                strand=standard_fields.get("strand", "+"),
+                target_name=standard_fields.get("target_name", ""),
+                target_length=int(standard_fields.get("target_length", 0)),
+                target_start=int(standard_fields.get("target_start", 0)),
+                target_end=int(standard_fields.get("target_end", 0)),
+                num_matches=int(standard_fields.get("num_matches", 0)),
+                alignment_block_length=int(
+                    standard_fields.get("alignment_block_length", 0)
+                ),
+                mapping_quality=int(standard_fields.get("mapping_quality", 0)),
+                tags=tags,
             )
             records.append(record)
 
@@ -606,9 +617,9 @@ class PAFReader:
             records: List of PAFRecord objects
             filename: Output PAF filename
         """
-        with open(filename, 'w') as f:
+        with open(filename, "w") as f:
             for record in records:
-                f.write(record.to_paf_line() + '\n')
+                f.write(record.to_paf_line() + "\n")
 
     @staticmethod
     def dataframe_to_paf(df: pd.DataFrame, filename: str):
@@ -638,7 +649,7 @@ if __name__ == "__main__":
     import argparse
 
     parser = argparse.ArgumentParser(
-        description='PAF file parser and analysis tool',
+        description="PAF file parser and analysis tool",
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog="""
 Examples:
@@ -650,15 +661,20 @@ Examples:
 
   # Show first N records
   python paf.py alignments.paf --head 5
-        """
+        """,
     )
-    parser.add_argument('paf_file', help='PAF file to parse')
-    parser.add_argument('--test-overlap', action='store_true',
-                        help='Test overlap functions on records')
-    parser.add_argument('--head', type=int, metavar='N',
-                        help='Show first N records in detail')
-    parser.add_argument('--test-roundtrip', metavar='OUTPUT',
-                        help='Test DataFrame round-trip conversion and write to OUTPUT')
+    parser.add_argument("paf_file", help="PAF file to parse")
+    parser.add_argument(
+        "--test-overlap", action="store_true", help="Test overlap functions on records"
+    )
+    parser.add_argument(
+        "--head", type=int, metavar="N", help="Show first N records in detail"
+    )
+    parser.add_argument(
+        "--test-roundtrip",
+        metavar="OUTPUT",
+        help="Test DataFrame round-trip conversion and write to OUTPUT",
+    )
 
     args = parser.parse_args()
 
@@ -668,9 +684,9 @@ Examples:
     print(f"Loaded {len(df)} alignments")
     print(f"\nColumns: {', '.join(df.columns)}")
 
-    if 'ct' in df.columns:
+    if "ct" in df.columns:
         print("\nClassification counts:")
-        print(df['ct'].value_counts())
+        print(df["ct"].value_counts())
 
     if args.head:
         print(f"\nFirst {args.head} records:")
@@ -680,21 +696,29 @@ Examples:
 
     # Test overlap functions if requested
     if args.test_overlap:
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print("Testing overlap functions")
-        print("="*60)
+        print("=" * 60)
 
         records = list(reader)
         if len(records) >= 2:
             rec1, rec2 = records[0], records[1]
 
             print(f"\nRecord 1: {rec1.query_name}:{rec1.query_start}-{rec1.query_end}")
-            print(f"          -> {rec1.target_name}:{rec1.target_start}-{rec1.target_end}")
-            print(f"          RE ID: {rec1.re_id}, Classification: {rec1.classification}")
+            print(
+                f"          -> {rec1.target_name}:{rec1.target_start}-{rec1.target_end}"
+            )
+            print(
+                f"          RE ID: {rec1.re_id}, Classification: {rec1.classification}"
+            )
 
             print(f"\nRecord 2: {rec2.query_name}:{rec2.query_start}-{rec2.query_end}")
-            print(f"          -> {rec2.target_name}:{rec2.target_start}-{rec2.target_end}")
-            print(f"          RE ID: {rec2.re_id}, Classification: {rec2.classification}")
+            print(
+                f"          -> {rec2.target_name}:{rec2.target_start}-{rec2.target_end}"
+            )
+            print(
+                f"          RE ID: {rec2.re_id}, Classification: {rec2.classification}"
+            )
 
             print(f"\nComparison:")
             print(f"  shares_re_id: {rec1.shares_re_id(rec2)}")
@@ -702,13 +726,17 @@ Examples:
             print(f"  target_overlap: {rec1.target_overlap(rec2)} bp")
             print(f"  has_query_overlap: {rec1.has_query_overlap(rec2)}")
             print(f"  has_target_overlap: {rec1.has_target_overlap(rec2)}")
-            print(f"  reciprocal_query_overlap: {rec1.reciprocal_query_overlap(rec2):.3f}")
-            print(f"  reciprocal_target_overlap: {rec1.reciprocal_target_overlap(rec2):.3f}")
+            print(
+                f"  reciprocal_query_overlap: {rec1.reciprocal_query_overlap(rec2):.3f}"
+            )
+            print(
+                f"  reciprocal_target_overlap: {rec1.reciprocal_target_overlap(rec2):.3f}"
+            )
 
             # Find records with same RE ID
-            print(f"\n" + "="*60)
+            print(f"\n" + "=" * 60)
             print("Finding records with same RE ID")
-            print("="*60)
+            print("=" * 60)
             re_groups = {}
             for rec in records[:100]:  # Test first 100
                 if rec.re_id:
@@ -717,34 +745,42 @@ Examples:
                     re_groups[rec.re_id].append(rec)
 
             multi_hit_res = {k: v for k, v in re_groups.items() if len(v) > 1}
-            print(f"\nFound {len(multi_hit_res)} REs with multiple alignments (from first 100)")
+            print(
+                f"\nFound {len(multi_hit_res)} REs with multiple alignments (from first 100)"
+            )
 
             if multi_hit_res:
                 example_re = list(multi_hit_res.keys())[0]
                 example_recs = multi_hit_res[example_re]
                 print(f"\nExample: RE {example_re} has {len(example_recs)} alignments:")
                 for i, rec in enumerate(example_recs, 1):
-                    print(f"  {i}. {rec.target_name}:{rec.target_start}-{rec.target_end} [{rec.classification}]")
+                    print(
+                        f"  {i}. {rec.target_name}:{rec.target_start}-{rec.target_end} [{rec.classification}]"
+                    )
 
                 if len(example_recs) >= 2:
                     r1, r2 = example_recs[0], example_recs[1]
                     print(f"\nComparing first two alignments:")
                     print(f"  Target overlap: {r1.target_overlap(r2)} bp")
-                    print(f"  Reciprocal target overlap: {r1.reciprocal_target_overlap(r2):.3f}")
+                    print(
+                        f"  Reciprocal target overlap: {r1.reciprocal_target_overlap(r2):.3f}"
+                    )
 
     # Test round-trip conversion if requested
     if args.test_roundtrip:
-        print("\n" + "="*60)
+        print("\n" + "=" * 60)
         print(f"Testing DataFrame round-trip conversion")
-        print("="*60)
+        print("=" * 60)
 
         # Read to DataFrame
         df = reader.to_dataframe()
         print(f"\nOriginal DataFrame: {len(df)} records")
 
         # Add a new column to test tag addition
-        df['test_score'] = df['num_matches'] * 2
-        df['identity_pct'] = (df['num_matches'] / df['alignment_block_length'] * 100).round(2)
+        df["test_score"] = df["num_matches"] * 2
+        df["identity_pct"] = (
+            df["num_matches"] / df["alignment_block_length"] * 100
+        ).round(2)
         print(f"Added new columns: test_score, identity_pct")
 
         # Convert back to PAF and write
@@ -757,9 +793,9 @@ Examples:
         print(f"Verified: {len(verify_df)} records read back")
 
         # Check new tags are present
-        if 'test_score' in verify_df.columns and 'identity_pct' in verify_df.columns:
+        if "test_score" in verify_df.columns and "identity_pct" in verify_df.columns:
             print("✓ New tags successfully added to PAF")
             print(f"\nSample of new tags:")
-            print(verify_df[['query_name', 'test_score', 'identity_pct']].head(3))
+            print(verify_df[["query_name", "test_score", "identity_pct"]].head(3))
         else:
             print("✗ New tags not found in output PAF")

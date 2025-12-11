@@ -7,7 +7,7 @@ rule merge_and_sort_pafs:
     """Merge all filtered PAF files and sort by query coordinates for stable line numbers."""
     input:
         pafs=expand(
-            "results/filtered_alignments/all_REs_vs_{sample_id}.paf",
+            rules.filter_alignments.output.paf,
             sample_id=get_all_sample_ids(),
         ),
     output:
@@ -29,7 +29,7 @@ rule merge_and_sort_pafs:
 rule paf_to_bed:
     """Convert merged PAF to sorted BED with source RE ID from id:Z: tag."""
     input:
-        paf="temp/graph/merged_sorted.paf",
+        paf=rules.merge_and_sort_pafs.output.merged,
     output:
         bed=temp("temp/graph/paf_positions.bed"),
     log:
@@ -57,8 +57,8 @@ rule paf_to_bed:
 rule create_implicit_res:
     """Find PAF positions with no annotated RE overlap, merge them, and create implicit RE IDs (IMPLICIT_chrom_start_end)."""
     input:
-        paf_bed="temp/graph/paf_positions.bed",
-        re_bed="temp/merged_re_sequences.bed",
+        paf_bed=rules.paf_to_bed.output.bed,
+        re_bed=rules.merge_unslopped_beds.output.bed,
     output:
         implicit_bed=temp("temp/graph/implicit_res.bed"),
     log:
@@ -93,9 +93,9 @@ rule create_implicit_res:
 rule intersect_paf_with_res:
     """Intersect PAF positions with annotated REs (reciprocal) and implicit REs (non-reciprocal), then combine."""
     input:
-        paf_bed="temp/graph/paf_positions.bed",
-        annotated_bed="temp/merged_re_sequences.bed",
-        implicit_bed="temp/graph/implicit_res.bed",
+        paf_bed=rules.paf_to_bed.output.bed,
+        annotated_bed=rules.merge_unslopped_beds.output.bed,
+        implicit_bed=rules.create_implicit_res.output.implicit_bed,
     output:
         intersect=temp("temp/graph/paf_re_intersections.tsv"),
         annotated=temp("temp/graph/paf_re_intersections.annotated.tsv"),
@@ -137,10 +137,15 @@ rule intersect_paf_with_res:
 rule paf_to_graphml:
     """Convert PAF alignments to GraphML with individual RE nodes, direct edges, and cluster_id annotations."""
     input:
-        paf="temp/graph/merged_sorted.paf",
-        intersections="temp/graph/paf_re_intersections.tsv",
+        paf=rules.merge_and_sort_pafs.output.merged,
+        intersections=rules.intersect_paf_with_res.output.intersect,
+        annotated_bed=rules.merge_unslopped_beds.output.bed,
+        implicit_bed=rules.create_implicit_res.output.implicit_bed,
     output:
         graph="results/graphs/re_graph.graphml",
+        cluster_map="results/graphs/re_clusters.tsv",
+        annotated_paf="results/graphs/annotated.paf",
+        annotated_res="results/graphs/annotated_res.bed",
     log:
         "logs/graph/re_graph.log",
     conda:

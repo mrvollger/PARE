@@ -34,6 +34,8 @@ config["filtering"].setdefault("min_re_length", 50)
 config["filtering"].setdefault("max_re_length", 10000)
 config["filtering"].setdefault("skip_repeats", False)
 config["filtering"].setdefault("slop", 2000)
+# sd_bed: Optional path to segmental duplication BED file for filtering
+# If provided, REs overlapping SDs will be excluded
 
 
 # Helper function for memory allocation with retries
@@ -94,6 +96,11 @@ def get_all_re_beds():
 def get_all_assembly_fais():
     """Get all assembly FAI file paths"""
     return [asm + ".fai" for asm in SAMPLES["assembly"].tolist()]
+
+
+def sd_filtering_enabled():
+    """Check if SD filtering is enabled (sd_bed is configured)"""
+    return config["filtering"].get("sd_bed") is not None
 
 
 # Output directory helpers

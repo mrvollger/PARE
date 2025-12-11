@@ -24,9 +24,9 @@ def load_fai_lengths(fai_files):
     """Load chromosome lengths from FAI files"""
     lengths = {}
     for fai_file in fai_files:
-        with open(fai_file, 'r') as f:
+        with open(fai_file, "r") as f:
             for line in f:
-                fields = line.strip().split('\t')
+                fields = line.strip().split("\t")
                 if len(fields) >= 2:
                     chrom = fields[0]
                     length = int(fields[1])
@@ -40,7 +40,7 @@ def parse_query_name(qname):
     Format: chrom_unslop_start_unslop_end::chrom:slop_start-slop_end
     Returns: (chrom, slop_start, slop_end)
     """
-    match = re.match(r'(.+)_\d+_\d+::(.+):(\d+)-(\d+)', qname)
+    match = re.match(r"(.+)_\d+_\d+::(.+):(\d+)-(\d+)", qname)
     if not match:
         return None
 
@@ -53,7 +53,7 @@ def parse_query_name(qname):
 
 def adjust_paf_line(line, chrom_lengths, log):
     """Adjust a single PAF line to reference original chromosome coordinates"""
-    fields = line.strip().split('\t')
+    fields = line.strip().split("\t")
     if len(fields) < 12:
         return None
 
@@ -89,7 +89,7 @@ def adjust_paf_line(line, chrom_lengths, log):
     fields[2] = str(new_qstart)  # Adjusted start
     fields[3] = str(new_qend)  # Adjusted end
 
-    return '\t'.join(fields)
+    return "\t".join(fields)
 
 
 def main():
@@ -101,7 +101,7 @@ def main():
     # For now, we'll get them from the input assembly FAI files
     # The rule should provide these as input
     fai_files = []
-    if hasattr(snakemake.input, 'fai'):
+    if hasattr(snakemake.input, "fai"):
         if isinstance(snakemake.input.fai, list):
             fai_files = snakemake.input.fai
         else:
@@ -115,15 +115,14 @@ def main():
     adjusted = 0
     filtered = 0
 
-    with open(paf_in, 'r') as infile, \
-         open(paf_out, 'w') as outfile, \
-         open(log_file, 'w') as log:
-
+    with open(paf_in, "r") as infile, open(paf_out, "w") as outfile, open(
+        log_file, "w"
+    ) as log:
         log.write("Adjusting PAF coordinates to original assembly positions\n\n")
         log.write(f"Loaded {len(chrom_lengths)} chromosomes from FAI files\n\n")
 
         for line in infile:
-            if line.startswith('#'):
+            if line.startswith("#"):
                 outfile.write(line)
                 continue
 
@@ -134,7 +133,7 @@ def main():
                 filtered += 1
             else:
                 adjusted += 1
-                outfile.write(adjusted_line + '\n')
+                outfile.write(adjusted_line + "\n")
 
         log.write(f"\nSummary:\n")
         log.write(f"  Total alignments: {total}\n")

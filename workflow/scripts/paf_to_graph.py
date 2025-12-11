@@ -23,6 +23,7 @@ try:
     from paf import PAFReader, PAFRecord
 except ImportError:
     import os
+
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, script_dir)
     from paf import PAFReader, PAFRecord
@@ -68,13 +69,14 @@ class UnionFind:
 @dataclass
 class RENode:
     """Represents a single RE node in the graph."""
+
     re_id: str
     cluster_id: str = None
 
     def to_dict(self) -> Dict:
         return {
-            're_id': self.re_id,
-            'cluster_id': self.cluster_id or 'unclustered',
+            "re_id": self.re_id,
+            "cluster_id": self.cluster_id or "unclustered",
         }
 
 
@@ -83,7 +85,9 @@ class REGraph:
 
     def __init__(self):
         self.paf_records: Dict[str, PAFRecord] = {}
-        self.paf_to_res: Dict[str, Tuple[Optional[str], Optional[str]]] = {}  # paf_id -> (source_re, target_re)
+        self.paf_to_res: Dict[
+            str, Tuple[Optional[str], Optional[str]]
+        ] = {}  # paf_id -> (source_re, target_re)
         self.nodes: Dict[str, RENode] = {}  # re_id -> RENode
         self.re_to_cluster: Dict[str, str] = {}  # re_id -> cluster_id
         self.edges: List[Dict] = []
@@ -98,7 +102,7 @@ class REGraph:
                 if not record:
                     continue
                 classification = record.classification or record.classify_alignment()
-                if skip_self and classification == 'self':
+                if skip_self and classification == "self":
                     continue
                 paf_id = f"paf_{line_num}"
                 self.paf_records[paf_id] = record
@@ -117,13 +121,13 @@ class REGraph:
 
         with open(intersect_file) as f:
             for line in f:
-                fields = line.strip().split('\t')
+                fields = line.strip().split("\t")
                 if len(fields) < 9:
                     continue
 
                 paf_id = fields[3]
-                source_re_id = fields[4] if fields[4] != '.' else None
-                target_re_id = fields[8] if fields[8] != '.' else None
+                source_re_id = fields[4] if fields[4] != "." else None
+                target_re_id = fields[8] if fields[8] != "." else None
 
                 # Store RE-to-RE connection for this PAF
                 self.paf_to_res[paf_id] = (source_re_id, target_re_id)
@@ -195,33 +199,40 @@ class REGraph:
             # Create edge connecting individual REs
             classification = record.classification or record.classify_alignment()
 
-            # Weight hierarchy: self(4) > paralog(3) > allelic(2) > ortholog(1)
-            weight_map = {'self': 4, 'paralog': 3, 'allelic': 2, 'ortholog': 1, 'unknown': 0}
-            weight = weight_map.get(classification, 0)
+            # Weight for ForceAtlas2: positive attracts, negative repels
+            # Paralogs cluster tightly, orthologs/allelic actively repel
+            weight_map = {
+                "self": 10,
+                "paralog": 10,
+                "allelic": 1,
+                "ortholog": 0.1,
+                "unknown": 0.1,
+            }
+            weight = weight_map.get(classification, 0.1)
 
             edge = {
-                'source': source_re_id,
-                'target': target_re_id,
-                'paf_id': paf_id,
-                'classification': classification,
-                'weight': weight,
-                'identity': record.calculate_identity(),
-                'coverage': record.calculate_re_coverage(),
-                'overlap': record.calculate_self_overlap(),
-                'query_name': record.query_name,
-                'query_start': record.query_start,
-                'query_end': record.query_end,
-                'target_name': record.target_name,
-                'target_start': record.target_start,
-                'target_end': record.target_end,
-                'strand': record.strand,
-                'num_matches': record.num_matches,
-                'alignment_length': record.alignment_block_length,
-                'mapq': record.mapping_quality,
-                'query_sample': record.query_sample,
-                'query_haplotype': record.query_haplotype,
-                'target_sample': record.target_sample,
-                'target_haplotype': record.target_haplotype,
+                "source": source_re_id,
+                "target": target_re_id,
+                "paf_id": paf_id,
+                "classification": classification,
+                "weight": weight,
+                "identity": record.calculate_identity(),
+                "coverage": record.calculate_re_coverage(),
+                "overlap": record.calculate_self_overlap(),
+                "query_name": record.query_name,
+                "query_start": record.query_start,
+                "query_end": record.query_end,
+                "target_name": record.target_name,
+                "target_start": record.target_start,
+                "target_end": record.target_end,
+                "strand": record.strand,
+                "num_matches": record.num_matches,
+                "alignment_length": record.alignment_block_length,
+                "mapq": record.mapping_quality,
+                "query_sample": record.query_sample,
+                "query_haplotype": record.query_haplotype,
+                "target_sample": record.target_sample,
+                "target_haplotype": record.target_haplotype,
             }
 
             for tag_name, tag_value in record.tags.items():
@@ -232,13 +243,19 @@ class REGraph:
             edges_created += 1
 
         print(f"  Created {edges_created} edges", file=sys.stderr)
-        print(f"  Skipped {edges_skipped_no_source} PAFs with no source RE", file=sys.stderr)
-        print(f"  Skipped {edges_skipped_no_target} PAFs with no target RE overlap", file=sys.stderr)
+        print(
+            f"  Skipped {edges_skipped_no_source} PAFs with no source RE",
+            file=sys.stderr,
+        )
+        print(
+            f"  Skipped {edges_skipped_no_target} PAFs with no target RE overlap",
+            file=sys.stderr,
+        )
 
     def get_stats(self) -> Dict:
         classification_counts = defaultdict(int)
         for edge in self.edges:
-            classification_counts[edge['classification']] += 1
+            classification_counts[edge["classification"]] += 1
 
         # Count cluster sizes
         cluster_sizes = defaultdict(int)
@@ -249,99 +266,168 @@ class REGraph:
                 num_clustered += 1
 
         return {
-            'num_nodes': len(self.nodes),
-            'num_edges': len(self.edges),
-            'num_paf_records': len(self.paf_records),
-            'classifications': dict(classification_counts),
-            'cluster_stats': {
-                'num_clusters': len(cluster_sizes),
-                'clustered_nodes': num_clustered,
-                'unclustered_nodes': len(self.nodes) - num_clustered,
-                'avg_cluster_size': sum(cluster_sizes.values()) / len(cluster_sizes) if cluster_sizes else 0,
-                'max_cluster_size': max(cluster_sizes.values()) if cluster_sizes else 0,
+            "num_nodes": len(self.nodes),
+            "num_edges": len(self.edges),
+            "num_paf_records": len(self.paf_records),
+            "classifications": dict(classification_counts),
+            "cluster_stats": {
+                "num_clusters": len(cluster_sizes),
+                "clustered_nodes": num_clustered,
+                "unclustered_nodes": len(self.nodes) - num_clustered,
+                "avg_cluster_size": sum(cluster_sizes.values()) / len(cluster_sizes)
+                if cluster_sizes
+                else 0,
+                "max_cluster_size": max(cluster_sizes.values()) if cluster_sizes else 0,
             },
         }
 
     def to_graphml(self) -> str:
-        root = ET.Element('graphml', {
-            'xmlns': 'http://graphml.graphdrawing.org/xmlns',
-            'xmlns:xsi': 'http://www.w3.org/2001/XMLSchema-instance',
-            'xsi:schemaLocation': 'http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd'
-        })
+        root = ET.Element(
+            "graphml",
+            {
+                "xmlns": "http://graphml.graphdrawing.org/xmlns",
+                "xmlns:xsi": "http://www.w3.org/2001/XMLSchema-instance",
+                "xsi:schemaLocation": "http://graphml.graphdrawing.org/xmlns http://graphml.graphdrawing.org/xmlns/1.0/graphml.xsd",
+            },
+        )
 
         # Node attributes: re_id and cluster_id
         node_attrs = [
-            ('re_id', 'string'),
-            ('cluster_id', 'string'),
+            ("re_id", "string"),
+            ("cluster_id", "string"),
         ]
         for i, (name, attr_type) in enumerate(node_attrs):
-            ET.SubElement(root, 'key', {
-                'id': f'n{i}', 'for': 'node',
-                'attr.name': name, 'attr.type': attr_type
-            })
+            ET.SubElement(
+                root,
+                "key",
+                {
+                    "id": f"n{i}",
+                    "for": "node",
+                    "attr.name": name,
+                    "attr.type": attr_type,
+                },
+            )
 
-        # Edge attributes
+        # Edge attributes (including visual color attribute)
         edge_attrs = [
-            ('paf_id', 'string'), ('classification', 'string'), ('weight', 'int'),
-            ('identity', 'double'), ('coverage', 'double'), ('overlap', 'int'),
-            ('query_name', 'string'), ('query_start', 'int'), ('query_end', 'int'),
-            ('target_name', 'string'), ('target_start', 'int'), ('target_end', 'int'),
-            ('strand', 'string'), ('num_matches', 'int'), ('alignment_length', 'int'),
-            ('mapq', 'int'), ('query_sample', 'string'), ('query_haplotype', 'string'),
-            ('target_sample', 'string'), ('target_haplotype', 'string'),
+            ("paf_id", "string"),
+            ("classification", "string"),
+            ("weight", "int"),
+            ("identity", "double"),
+            ("coverage", "double"),
+            ("overlap", "int"),
+            ("query_name", "string"),
+            ("query_start", "int"),
+            ("query_end", "int"),
+            ("target_name", "string"),
+            ("target_start", "int"),
+            ("target_end", "int"),
+            ("strand", "string"),
+            ("num_matches", "int"),
+            ("alignment_length", "int"),
+            ("mapq", "int"),
+            ("query_sample", "string"),
+            ("query_haplotype", "string"),
+            ("target_sample", "string"),
+            ("target_haplotype", "string"),
         ]
         edge_attr_map = {}
         for i, (name, attr_type) in enumerate(edge_attrs):
-            ET.SubElement(root, 'key', {
-                'id': f'e{i}', 'for': 'edge',
-                'attr.name': name, 'attr.type': attr_type
-            })
-            edge_attr_map[name] = f'e{i}'
+            ET.SubElement(
+                root,
+                "key",
+                {
+                    "id": f"e{i}",
+                    "for": "edge",
+                    "attr.name": name,
+                    "attr.type": attr_type,
+                },
+            )
+            edge_attr_map[name] = f"e{i}"
 
-        graph = ET.SubElement(root, 'graph', {'id': 'RE_Graph', 'edgedefault': 'directed'})
+        # Add visual color attribute for Gephi/Cytoscape
+        color_key_id = f"e{len(edge_attrs)}"
+        ET.SubElement(
+            root,
+            "key",
+            {
+                "id": color_key_id,
+                "for": "edge",
+                "attr.name": "color",
+                "attr.type": "string",
+            },
+        )
+
+        graph = ET.SubElement(
+            root, "graph", {"id": "RE_Graph", "edgedefault": "directed"}
+        )
 
         # Add individual RE nodes
         for node in self.nodes.values():
-            node_elem = ET.SubElement(graph, 'node', {'id': node.re_id})
+            node_elem = ET.SubElement(graph, "node", {"id": node.re_id})
             node_dict = node.to_dict()
             for i, (attr_name, _) in enumerate(node_attrs):
                 if attr_name in node_dict:
-                    data = ET.SubElement(node_elem, 'data', {'key': f'n{i}'})
+                    data = ET.SubElement(node_elem, "data", {"key": f"n{i}"})
                     data.text = str(node_dict[attr_name])
+
+        # Color map for classifications (RGB hex colors)
+        classification_colors = {
+            "self": "#808080",  # Gray
+            "paralog": "#E74C3C",  # Red
+            "allelic": "#3498DB",  # Blue
+            "ortholog": "#2ECC71",  # Green
+            "unknown": "#95A5A6",  # Light gray
+        }
 
         # Add edges connecting REs
         for i, edge in enumerate(self.edges):
-            edge_elem = ET.SubElement(graph, 'edge', {
-                'id': f'e{i}', 'source': edge['source'], 'target': edge['target']
-            })
+            edge_elem = ET.SubElement(
+                graph,
+                "edge",
+                {"id": f"e{i}", "source": edge["source"], "target": edge["target"]},
+            )
             for attr_name, key_id in edge_attr_map.items():
                 if attr_name in edge:
-                    data = ET.SubElement(edge_elem, 'data', {'key': key_id})
+                    data = ET.SubElement(edge_elem, "data", {"key": key_id})
                     data.text = str(edge[attr_name])
 
-        xml_str = ET.tostring(root, encoding='unicode')
+            # Add color based on classification
+            classification = edge.get("classification", "unknown")
+            color = classification_colors.get(classification, "#95A5A6")
+            color_data = ET.SubElement(edge_elem, "data", {"key": color_key_id})
+            color_data.text = color
+
+        xml_str = ET.tostring(root, encoding="unicode")
         dom = minidom.parseString(xml_str)
-        return dom.toprettyxml(indent='  ')
+        return dom.toprettyxml(indent="  ")
 
 
 def snakemake_main():
     paf_file = snakemake.input.paf
     intersect_file = snakemake.input.intersections
-    output_file = snakemake.output.graph
+    annotated_bed = snakemake.input.get("annotated_bed")
+    implicit_bed = snakemake.input.get("implicit_bed")
+
+    output_graph = snakemake.output.graph
+    output_cluster_map = snakemake.output.cluster_map
+    output_annotated_paf = snakemake.output.annotated_paf
+    output_annotated_res = snakemake.output.annotated_res
+
     log_file = snakemake.log[0] if snakemake.log else None
-    skip_self = snakemake.params.get('skip_self', True)
-    
+    skip_self = snakemake.params.get("skip_self", True)
+
     if log_file:
-        log = open(log_file, 'w')
+        log = open(log_file, "w")
         old_stderr = sys.stderr
         sys.stderr = log
-    
+
     try:
         graph = REGraph()
         graph.load_paf_file(paf_file, skip_self=skip_self)
         graph.load_intersections(intersect_file)
         graph.build_edges()
-        
+
         stats = graph.get_stats()
         print(f"\nGraph Statistics:")
         print(f"  Nodes (individual REs): {stats['num_nodes']}")
@@ -354,17 +440,59 @@ def snakemake_main():
         print(f"    Avg cluster size: {stats['cluster_stats']['avg_cluster_size']:.2f}")
         print(f"    Max cluster size: {stats['cluster_stats']['max_cluster_size']}")
         print(f"  Edge Classifications:")
-        for classification, count in sorted(stats['classifications'].items()):
+        for classification, count in sorted(stats["classifications"].items()):
             print(f"    {classification}: {count}")
-        
+
         print(f"\nExporting to GraphML format...")
         output = graph.to_graphml()
-        
-        with open(output_file, 'w') as f:
+        with open(output_graph, "w") as f:
             f.write(output)
-        
-        print(f"Wrote graph to: {output_file}")
-    
+        print(f"Wrote graph to: {output_graph}")
+
+        print(f"\nExporting cluster map...")
+        with open(output_cluster_map, "w") as f:
+            f.write("re_id\tcluster_id\n")
+            for re_id, node in sorted(graph.nodes.items()):
+                cluster_id = node.cluster_id or "unclustered"
+                f.write(f"{re_id}\t{cluster_id}\n")
+        print(f"Wrote cluster map to: {output_cluster_map}")
+
+        print(f"\nAnnotating PAF file...")
+        with open(output_annotated_paf, "w") as f_out:
+            for paf_id, record in sorted(graph.paf_records.items()):
+                source_re_id, target_re_id = graph.paf_to_res.get(paf_id, (None, None))
+                cluster_id = (
+                    graph.nodes.get(source_re_id).cluster_id
+                    if source_re_id in graph.nodes
+                    else "."
+                )
+
+                line = record.to_paf_line()
+                line += f"\tpi:Z:{paf_id}\tci:Z:{cluster_id or '.'}"
+                f_out.write(line + "\n")
+        print(f"Wrote annotated PAF to: {output_annotated_paf}")
+
+        print(f"\nAnnotating RE BED file...")
+        with open(output_annotated_res, "w") as f_out:
+            for bed_file in [annotated_bed, implicit_bed]:
+                if bed_file:
+                    with open(bed_file) as f_in:
+                        for line in f_in:
+                            if line.startswith("#"):
+                                continue
+                            fields = line.strip().split("\t")
+                            if len(fields) >= 4:
+                                chrom, start, end, re_id = fields[:4]
+                                cluster_id = (
+                                    graph.nodes.get(re_id).cluster_id
+                                    if re_id in graph.nodes
+                                    else "."
+                                )
+                                f_out.write(
+                                    f"{chrom}\t{start}\t{end}\t{re_id}\t{cluster_id or '.'}\n"
+                                )
+        print(f"Wrote annotated REs to: {output_annotated_res}")
+
     finally:
         if log_file:
             sys.stderr = old_stderr
@@ -372,9 +500,8 @@ def snakemake_main():
 
 
 if __name__ == "__main__":
-    if 'snakemake' in globals():
+    if "snakemake" in globals():
         snakemake_main()
     else:
         print("This script is designed to run within Snakemake.", file=sys.stderr)
         sys.exit(1)
-
