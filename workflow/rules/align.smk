@@ -5,8 +5,9 @@ Rules for aligning RE sequences to all assemblies to find paralogs
 
 rule merge_all_re_sequences:
     """
-    Merge all RE sequences from all samples into a single FASTA
-    Sequence names already contain sample_id prefix from bedtools getfasta -name
+    Merge all RE sequences (with slop/flanking) from all samples into a single FASTA.
+    Sequence names already contain sample_id prefix from bedtools getfasta -name.
+    Used for RE-to-genome alignments where flanking helps with mapping.
     """
     input:
         fastas=expand(
@@ -16,6 +17,31 @@ rule merge_all_re_sequences:
         fasta="temp/merged_re_sequences.fa",
     log:
         "logs/merge_sequences/all.log",
+    threads: 1
+    resources:
+        mem_mb=2048,
+        runtime=10,
+    shell:
+        """
+        cat {input.fastas} > {output.fasta} 2> {log}
+        """
+
+
+rule merge_all_re_sequences_unslopped:
+    """
+    Merge all exact RE sequences (without slop/flanking) from all samples.
+    Used for RE-to-RE all-vs-all alignments where we want true sequence identity
+    between the actual regulatory elements, not including flanking sequence.
+    """
+    input:
+        fastas=expand(
+            rules.extract_re_sequences.output.fasta_unslopped,
+            sample_id=get_all_sample_ids(),
+        ),
+    output:
+        fasta="temp/merged_re_sequences.unslopped.fa",
+    log:
+        "logs/merge_sequences/all_unslopped.log",
     threads: 1
     resources:
         mem_mb=2048,
@@ -153,3 +179,5 @@ rule filter_alignments:
         min_coverage=config["alignment"]["min_coverage"],
     script:
         "../scripts/filter_paf.py"
+
+

@@ -14,14 +14,43 @@ wildcard_constraints:
 include: "rules/extract_sequences.smk"
 include: "rules/align.smk"
 include: "rules/graph.smk"
+include: "rules/all_by_all.smk"
+
+
+# Conditionally include pileup rules if any samples have ft_bam
+if ft_pileup_enabled():
+
+    include: "rules/pileup.smk"
+
+
+def get_all_outputs():
+    """Get all output files, conditionally including pileup if enabled."""
+    outputs = [
+        # Final filtered alignments for each assembly
+        *expand(
+            "results/filtered_alignments/all_REs_vs_{sample_id}.paf",
+            sample_id=get_all_sample_ids(),
+        ),
+        # Graph visualization
+        "results/graphs/re_graph.graphml",
+        # All-by-all RE pairwise identity
+        "results/all_by_all/re_pairwise_identity.tsv.gz",
+    ]
+
+    # Add pileup outputs if enabled
+    if ft_pileup_enabled():
+        outputs.extend(
+            expand(
+                "results/pileup/{sample_id}.peaks.bed.gz",
+                sample_id=get_sample_ids_with_ft_bam(),
+            )
+        )
+        # Merged peaks with cluster annotations
+        outputs.append("results/pileup/peaks_with_clusters.bed.gz")
+
+    return outputs
 
 
 rule all:
     input:
-        # Final filtered alignments for each assembly
-        expand(
-            rules.filter_alignments.output.paf,
-            sample_id=get_all_sample_ids(),
-        ),
-        # Graph visualization
-        rules.paf_to_graphml.output.graph,
+        get_all_outputs(),

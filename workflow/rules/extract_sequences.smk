@@ -7,6 +7,7 @@ rule extract_re_sequences:
     """
     Extract sequences for regulatory elements from their source assembly.
     Creates unslopped bed (exact coordinates) and slopped bed + fasta (with flanking).
+    Also creates unslopped fasta (exact RE sequences without flanking).
     """
     input:
         bed=get_re_bed,
@@ -14,6 +15,7 @@ rule extract_re_sequences:
         fai=lambda wc: get_assembly(wc) + ".fai",
     output:
         fasta=temp("temp/sequences/{sample_id}.re_sequences.fa"),
+        fasta_unslopped=temp("temp/sequences/{sample_id}.re_sequences.unslopped.fa"),
         bed=temp("temp/sequences/{sample_id}.re_sequences.bed"),
         bed_slop=temp("temp/sequences/{sample_id}.re_sequences.slop.bed"),
     log:
@@ -56,6 +58,13 @@ rule extract_re_sequences:
             --bed {output.bed_slop} \
             --name \
             > {output.fasta} 2>> {log}
+
+        # Extract unslopped (exact) RE sequences for RE-to-RE alignment
+        rb get-fasta \
+            --fasta {input.fasta} \
+            --bed {output.bed} \
+            --name \
+            > {output.fasta_unslopped} 2>> {log}
         """
 
 
@@ -108,7 +117,7 @@ rule filter_re_against_sd:
         """
 
 
-def get_re_beds_for_merge():
+def get_re_beds_for_merge(wildcards):
     """
     Return the appropriate RE BED files for merging.
     Uses SD-filtered beds if sd_bed is configured, otherwise uses unfiltered beds.

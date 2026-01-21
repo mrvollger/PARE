@@ -230,10 +230,44 @@ class PAFRecord:
         return self.tags.get("cg")
 
     def calculate_identity(self) -> float:
-        """Calculate alignment identity as percentage."""
+        """Calculate alignment identity as percentage (alias for blast_identity)."""
+        return self.blast_identity()
+
+    def blast_identity(self) -> float:
+        """
+        Calculate BLAST-style sequence identity as percentage.
+
+        BLAST identity = num_matches / alignment_block_length * 100
+
+        This treats each gap base as a mismatch. For example, a 10bp gap
+        counts as 10 mismatches.
+
+        Returns:
+            Identity percentage (0.0 to 100.0)
+        """
         if self.alignment_block_length == 0:
             return 0.0
         return (self.num_matches / self.alignment_block_length) * 100
+
+    def gap_compressed_identity(self) -> float:
+        """
+        Calculate gap-compressed sequence identity as percentage.
+
+        Gap-compressed identity = (1 - de) * 100
+
+        Where 'de' is the gap-compressed divergence from minimap2's de:f tag.
+        This treats each gap opening as a single event regardless of gap length.
+        For example, a 10bp gap counts as 1 mismatch, not 10.
+
+        Reference: http://lh3.github.io/2018/11/25/on-the-definition-of-sequence-identity
+
+        Returns:
+            Identity percentage (0.0 to 100.0), or None if de:f tag not present
+        """
+        de = self.tags.get("de")
+        if de is None:
+            return None
+        return (1.0 - de) * 100
 
     def calculate_query_coverage(self) -> float:
         """Calculate query coverage as percentage."""

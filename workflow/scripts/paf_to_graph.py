@@ -20,13 +20,13 @@ import xml.etree.ElementTree as ET
 from xml.dom import minidom
 
 try:
-    from paf import PAFReader, PAFRecord
+    from paf import PAFReader, PAFRecord, parse_contig_name
 except ImportError:
     import os
 
     script_dir = os.path.dirname(os.path.abspath(__file__))
     sys.path.insert(0, script_dir)
-    from paf import PAFReader, PAFRecord
+    from paf import PAFReader, PAFRecord, parse_contig_name
 
 
 class UnionFind:
@@ -64,6 +64,203 @@ class UnionFind:
             root = self.find(x)
             clusters[root].append(x)
         return dict(clusters)
+
+
+def find_bridges_and_split(
+    edges: List[Tuple[str, str, float]],
+    min_cluster_size: int = 3,
+    min_density_threshold: float = 0.5,
+) -> Dict[str, List[str]]:
+    """
+    Find weakly connected components and split them at bridge edges if it improves density.
+
+    Uses Tarjan's bridge-finding algorithm to identify edges whose removal
+    disconnects the graph. Only splits if:
+    1. Cluster has at least min_cluster_size nodes
+    2. Original cluster density is below threshold (0.5)
+    3. Both resulting sides improve density AND exceed threshold
+
+    Args:
+        edges: List of (node1, node2, weight) tuples
+        min_cluster_size: Minimum cluster size to consider for splitting (default: 3)
+        min_density_threshold: Density threshold - original must be below,
+                              results must be at or above (default: 0.5)
+
+    Returns:
+        Dictionary mapping cluster root -> list of member node IDs
+    """
+    # Build adjacency list with total weight and edge counts
+    adj = defaultdict(lambda: defaultdict(float))  # total weight
+    edge_counts = defaultdict(lambda: defaultdict(int))  # number of edges
+    nodes = set()
+
+    for n1, n2, weight in edges:
+        if n1 == n2:
+            continue
+        nodes.add(n1)
+        nodes.add(n2)
+        adj[n1][n2] += weight
+        adj[n2][n1] += weight
+        edge_counts[n1][n2] += 1
+        edge_counts[n2][n1] += 1
+
+    if not nodes:
+        return {}
+
+    # Tarjan's bridge-finding algorithm
+    discovery = {}
+    low = {}
+    parent = {}
+    bridges = []  # (u, v, total_weight, edge_count)
+    time_counter = [0]
+
+    def dfs(u):
+        discovery[u] = low[u] = time_counter[0]
+        time_counter[0] += 1
+
+        for v in adj[u]:
+            if v not in discovery:
+                parent[v] = u
+                dfs(v)
+                low[u] = min(low[u], low[v])
+
+                # Check if u-v is a bridge
+                if low[v] > discovery[u]:
+                    total_weight = adj[u][v]
+                    count = edge_counts[u][v]
+                    bridges.append((u, v, total_weight, count))
+            elif v != parent.get(u):
+                low[u] = min(low[u], discovery[v])
+
+    # Run DFS from each unvisited node (handles disconnected components)
+    for node in nodes:
+        if node not in discovery:
+            parent[node] = None
+            dfs(node)
+
+    print(f"  Found {len(bridges)} bridges in the graph", file=sys.stderr)
+
+    if not bridges:
+        # No bridges - use simple union-find
+        uf = UnionFind()
+        for n1, n2, _ in edges:
+            if n1 != n2:
+                uf.union(n1, n2)
+            else:
+                uf.find(n1)
+        return uf.get_clusters()
+
+    # For each bridge, determine if splitting improves cluster quality
+    # We need to know which nodes are on each side of the bridge
+    def get_component_sides(bridge_u, bridge_v):
+        """Get nodes on each side of a bridge using BFS, excluding the bridge edge."""
+        side_u = set()
+        side_v = set()
+
+        # BFS from u, not crossing the bridge
+        queue = [bridge_u]
+        side_u.add(bridge_u)
+        while queue:
+            node = queue.pop(0)
+            for neighbor in adj[node]:
+                if neighbor not in side_u:
+                    # Don't cross the bridge
+                    if not (node == bridge_u and neighbor == bridge_v):
+                        side_u.add(neighbor)
+                        queue.append(neighbor)
+
+        # BFS from v, not crossing the bridge
+        queue = [bridge_v]
+        side_v.add(bridge_v)
+        while queue:
+            node = queue.pop(0)
+            for neighbor in adj[node]:
+                if neighbor not in side_v:
+                    if not (node == bridge_v and neighbor == bridge_u):
+                        side_v.add(neighbor)
+                        queue.append(neighbor)
+
+        return side_u, side_v
+
+    def calculate_density(node_set):
+        """
+        Calculate graph density: actual_edges / possible_edges.
+
+        A singleton (n=1) is considered fully connected (density=1.0)
+        to allow splitting off loosely connected singletons.
+        """
+        n = len(node_set)
+        if n <= 1:
+            return 1.0  # Singleton is fully connected by definition
+        possible_edges = n * (n - 1) / 2
+        actual_edges = 0
+        node_list = list(node_set)
+        for i, n1 in enumerate(node_list):
+            for n2 in node_list[i+1:]:
+                if n2 in adj[n1]:
+                    actual_edges += edge_counts[n1][n2]
+        return actual_edges / possible_edges
+
+    # Evaluate each bridge for potential splitting
+    bridges_to_cut = set()
+    skipped_cluster_too_small = 0
+    skipped_no_density_improvement = 0
+
+    for u, v, bridge_weight, bridge_count in bridges:
+        side_u, side_v = get_component_sides(u, v)
+        combined = side_u | side_v
+
+        # Only apply to clusters with at least min_cluster_size nodes total
+        if len(combined) < min_cluster_size:
+            skipped_cluster_too_small += 1
+            continue
+
+        # Calculate density before and after split
+        density_before = calculate_density(combined)
+        density_u = calculate_density(side_u)
+        density_v = calculate_density(side_v)
+
+        # Check density improvement:
+        # 1. Original cluster must have low density (below threshold)
+        # 2. Both resulting sides must improve AND exceed threshold
+        # This prevents splitting already well-connected clusters
+        density_improves = (
+            density_before < min_density_threshold
+            and density_u > density_before and density_v > density_before
+            and density_u >= min_density_threshold and density_v >= min_density_threshold
+        )
+
+        # Cut if density improves
+        if density_improves:
+            bridges_to_cut.add((min(u, v), max(u, v)))
+            print(f"    Cutting bridge: sides={len(side_u)},{len(side_v)}, "
+                  f"density: {density_before:.3f}->{density_u:.3f},{density_v:.3f}", file=sys.stderr)
+        else:
+            skipped_no_density_improvement += 1
+
+    print(f"  Bridges skipped (cluster too small): {skipped_cluster_too_small}", file=sys.stderr)
+    print(f"  Bridges where density didn't improve: {skipped_no_density_improvement}", file=sys.stderr)
+    print(f"  Cutting {len(bridges_to_cut)} bridges that improve quality", file=sys.stderr)
+
+    # Rebuild clusters excluding bridges to cut
+    uf = UnionFind()
+    for n1, n2, weight in edges:
+        if n1 == n2:
+            uf.find(n1)
+            continue
+        bridge_key = (min(n1, n2), max(n1, n2))
+        if bridge_key not in bridges_to_cut:
+            uf.union(n1, n2)
+        else:
+            # Ensure both nodes exist in union-find even if not merged
+            uf.find(n1)
+            uf.find(n2)
+
+    # Also ensure singleton nodes are included
+    for node in nodes:
+        uf.find(node)
+
+    return uf.get_clusters()
 
 
 @dataclass
@@ -108,16 +305,30 @@ class REGraph:
                 self.paf_records[paf_id] = record
         print(f"  Loaded {len(self.paf_records)} PAF records", file=sys.stderr)
 
-    def load_intersections(self, intersect_file: str):
+    def load_intersections(
+        self,
+        intersect_file: str,
+        split_bridges: bool = True,
+        min_cluster_size: int = 3,
+    ):
         """
         Load bedtools intersection results and build RE nodes with cluster assignments.
 
         Format (9 columns):
         paf_chrom, paf_start, paf_end, paf_id, source_re_id,
         target_re_chrom, target_re_start, target_re_end, target_re_id
+
+        Args:
+            intersect_file: Path to bedtools intersection file
+            split_bridges: If True, use bridge detection to split weakly connected clusters.
+                          Default True enables quality-based splitting.
+            min_cluster_size: Minimum size for clusters after splitting (default: 3)
         """
         print(f"Loading intersections: {intersect_file}", file=sys.stderr)
-        uf = UnionFind()
+
+        # Collect all edges with weights from PAF records
+        # Weight = identity * num_matches (quality-adjusted)
+        all_edges = []  # List of (source_re_id, target_re_id, weight)
 
         with open(intersect_file) as f:
             for line in f:
@@ -132,22 +343,46 @@ class REGraph:
                 # Store RE-to-RE connection for this PAF
                 self.paf_to_res[paf_id] = (source_re_id, target_re_id)
 
-                # Cluster REs that overlap
+                # Calculate edge weight from PAF record if available
+                weight = 1.0
+                if paf_id in self.paf_records:
+                    record = self.paf_records[paf_id]
+                    identity = record.calculate_identity() / 100.0  # Convert to fraction
+                    weight = identity * record.num_matches
+
+                # Collect edges for clustering
                 if source_re_id and target_re_id:
-                    # Both REs exist - union them
-                    uf.union(source_re_id, target_re_id)
+                    all_edges.append((source_re_id, target_re_id, weight))
                 elif source_re_id:
-                    # Only source RE exists - ensure it's in the union-find
-                    uf.find(source_re_id)
+                    # Singleton - add self-edge to ensure it's included
+                    all_edges.append((source_re_id, source_re_id, 0.0))
                 elif target_re_id:
-                    # Only target RE exists (shouldn't happen often)
-                    uf.find(target_re_id)
+                    all_edges.append((target_re_id, target_re_id, 0.0))
 
         print(f"  Processed {len(self.paf_to_res)} PAF-RE connections", file=sys.stderr)
+        print(f"  Collected {len(all_edges)} edges for clustering", file=sys.stderr)
 
-        # Build RE nodes with cluster assignments from Union-Find
-        uf_clusters = uf.get_clusters()
-        print(f"  Found {len(uf_clusters)} RE clusters", file=sys.stderr)
+        # Use bridge detection if enabled, otherwise simple Union-Find
+        if split_bridges:
+            print(f"  Using bridge detection (min_cluster_size={min_cluster_size})", file=sys.stderr)
+            uf_clusters = find_bridges_and_split(
+                all_edges,
+                min_cluster_size=min_cluster_size,
+            )
+        else:
+            print("  Using simple Union-Find clustering (no bridge splitting)", file=sys.stderr)
+            uf = UnionFind()
+            for source, target, _ in all_edges:
+                if source == target:
+                    uf.find(source)  # Singleton
+                else:
+                    uf.union(source, target)
+            uf_clusters = uf.get_clusters()
+
+        # Filter out singleton clusters (size 1) - we're not interested in isolated REs
+        singleton_count = sum(1 for re_ids in uf_clusters.values() if len(re_ids) == 1)
+        uf_clusters = {k: v for k, v in uf_clusters.items() if len(v) > 1}
+        print(f"  Found {len(uf_clusters)} RE clusters (filtered {singleton_count} singletons)", file=sys.stderr)
 
         cluster_counter = 0
         for _, re_ids in uf_clusters.items():
@@ -472,7 +707,7 @@ def snakemake_main():
                 f_out.write(line + "\n")
         print(f"Wrote annotated PAF to: {output_annotated_paf}")
 
-        print(f"\nAnnotating RE BED file...")
+        print("\nAnnotating RE BED file...")
         with open(output_annotated_res, "w") as f_out:
             for bed_file in [annotated_bed, implicit_bed]:
                 if bed_file:
@@ -488,8 +723,12 @@ def snakemake_main():
                                     if re_id in graph.nodes
                                     else "."
                                 )
+                                # Parse sample and haplotype from chrom name
+                                parsed = parse_contig_name(chrom)
+                                sample = parsed["sample"]
+                                haplotype = parsed["haplotype"]
                                 f_out.write(
-                                    f"{chrom}\t{start}\t{end}\t{re_id}\t{cluster_id or '.'}\n"
+                                    f"{chrom}\t{start}\t{end}\t{re_id}\t{cluster_id or '.'}\t{sample}\t{haplotype}\n"
                                 )
         print(f"Wrote annotated REs to: {output_annotated_res}")
 

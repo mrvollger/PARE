@@ -30,6 +30,9 @@ config["clustering"].setdefault("method", "graph")
 
 # Filtering defaults
 config.setdefault("filtering", {})
+
+# Pileup defaults
+config.setdefault("pileup", {})
 config["filtering"].setdefault("min_re_length", 50)
 config["filtering"].setdefault("max_re_length", 10000)
 config["filtering"].setdefault("skip_repeats", False)
@@ -101,6 +104,92 @@ def get_all_assembly_fais():
 def sd_filtering_enabled():
     """Check if SD filtering is enabled (sd_bed is configured)"""
     return config["filtering"].get("sd_bed") is not None
+
+
+def has_ft_bam(sample_id):
+    """Check if a sample_id has an ft_bam configured"""
+    if "ft_bam" not in SAMPLES.columns:
+        return False
+    row = SAMPLES[SAMPLES["sample_id"] == sample_id]
+    if row.empty:
+        return False
+    bam_path = row["ft_bam"].values[0]
+    return pd.notna(bam_path) and bam_path != ""
+
+
+def get_ft_bam(wildcards):
+    """Get ft_bam path for a given sample_id"""
+    row = SAMPLES[SAMPLES["sample_id"] == wildcards.sample_id]
+    return row["ft_bam"].values[0]
+
+
+def get_sample_ids_with_ft_bam():
+    """Get sample IDs that have ft_bam configured"""
+    if "ft_bam" not in SAMPLES.columns:
+        return []
+    return [
+        sid for sid in get_all_sample_ids()
+        if has_ft_bam(sid)
+    ]
+
+
+def ft_pileup_enabled():
+    """Check if any samples have ft_bam configured"""
+    return len(get_sample_ids_with_ft_bam()) > 0
+
+
+def get_sample_from_sample_id(sample_id):
+    """Extract sample name from sample_id (e.g., 'HG002_hap1' -> 'HG002')"""
+    return sample_id.rsplit("_", 1)[0]
+
+
+def get_haplotype_from_sample_id(sample_id):
+    """Extract haplotype from sample_id (e.g., 'HG002_hap1' -> 'hap1')"""
+    return sample_id.rsplit("_", 1)[1]
+
+
+def get_haplotype_number(sample_id):
+    """Get haplotype number (1 or 2) from sample_id"""
+    haplotype = get_haplotype_from_sample_id(sample_id)
+    return "1" if haplotype == "hap1" else "2"
+
+
+def get_contig_patterns_for_sample_id(sample_id):
+    """
+    Get regex patterns that match contigs for a given sample_id.
+
+    Returns a list of compiled regex patterns for matching contig names.
+
+    Supported naming conventions:
+    - HG00097#1#contig or HG00097#2#contig (HPRC style)
+    - chr*_PATERNAL or chr*_MATERNAL (T2T style, only for HG002)
+    """
+    import re
+
+    sample = get_sample_from_sample_id(sample_id)
+    haplotype = get_haplotype_from_sample_id(sample_id)
+    hap_num = get_haplotype_number(sample_id)
+
+    patterns = []
+
+    # Pattern 1: HPRC style - HG00097#1#contig
+    patterns.append(re.compile(rf"^{re.escape(sample)}#{hap_num}#"))
+
+    # Pattern 2: T2T style - chr*_PATERNAL or chr*_MATERNAL
+    # Only apply this pattern for HG002 (the T2T reference sample)
+    if sample == "HG002":
+        if haplotype == "hap1":
+            patterns.append(re.compile(r"_PATERNAL$"))
+        else:
+            patterns.append(re.compile(r"_MATERNAL$"))
+
+    return patterns
+
+
+def contig_matches_sample_id(contig_name, sample_id):
+    """Check if a contig name belongs to a given sample_id."""
+    patterns = get_contig_patterns_for_sample_id(sample_id)
+    return any(p.search(contig_name) for p in patterns)
 
 
 # Output directory helpers

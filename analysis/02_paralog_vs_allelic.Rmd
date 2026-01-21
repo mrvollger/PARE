@@ -1,0 +1,590 @@
+---
+title: "Paralog vs Allelic Variance Comparison"
+author: "PARE Pipeline"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Overview
+
+Compare variance between paralogs (within same sample/haplotype) to allelic variance
+(ref vs alt at each individual RE position).
+
+**Key insight**:
+- **Paralog variance**: SD of FIRE ratios among REs on the *same* sample/haplotype within a cluster
+- **Allelic variance**: Difference between `fire_ratio_ref` and `fire_ratio_alt` at each RE position (comparing the two haplotypes at the same genomic location)
+
+## Load Data
+
+```{r load-data}
+library(tidyverse)
+library(ggplot2)
+library(glue)
+library(scales)
+library(ggpubr)
+
+# Install mrvplot if not available
+if (!requireNamespace("mrvplot", quietly = TRUE)) {
+    devtools::install_github("mrvollger/mrvplot")
+}
+library(mrvplot)
+theme_set(mrv_grid())
+
+# Load pre-processed data from data loader
+load("data/paralog_data.RData")
+
+cat("Loaded data:\n")
+cat("  - re_table_filtered:", nrow(re_table_filtered), "REs\n")
+cat("  - re_pairs:", nrow(re_pairs), "paralog pairs\n")
+```
+
+## Calculate Paralog Group Statistics
+
+First, we need to calculate the paralog group statistics (SD of FIRE ratio within each group).
+
+```{r paralog-group-stats}
+# Count paralogs per cluster/sample/haplotype
+paralog_groups <- re_table_filtered %>%
+    group_by(cluster_id, sample, haplotype) %>%
+    summarise(
+        n_paralogs = n(),
+        .groups = "drop"
+    ) %>%
+    filter(n_paralogs >= 2)
+
+# Join back to get the actual RE data for paralog groups
+paralogs <- re_table_filtered %>%
+    inner_join(paralog_groups, by = c("cluster_id", "sample", "haplotype"))
+
+# Helper function to calculate mean of all pairwise absolute differences
+mean_pairwise_diff <- function(x) {
+    x <- x[!is.na(x)]
+    if (length(x) < 2) {
+        return(NA_real_)
+    }
+    diffs <- combn(x, 2, function(pair) abs(pair[1] - pair[2]))
+    mean(diffs)
+}
+
+# Calculate variance statistics per group
+group_stats <- paralogs %>%
+    group_by(cluster_id, sample, haplotype) %>%
+    summarise(
+        n_paralogs = n(),
+        mean_fire_ratio_diff = mean_pairwise_diff(fire_ratio_ref), # mean of pairwise |diff|
+        sd_fire_ratio = sd(fire_ratio_ref, na.rm = TRUE),
+        cv_fire_ratio = sd_fire_ratio / mean_fire_ratio_diff, # CV using pairwise diff as denominator
+        mean_coverage = mean(coverage_ref, na.rm = TRUE),
+        .groups = "drop"
+    ) %>%
+    filter(!is.na(sd_fire_ratio), !is.na(mean_fire_ratio_diff))
+
+cat("Paralog groups with variance stats:", nrow(group_stats), "\n")
+```
+
+## Calculate Allelic Variance
+
+Calculate allelic difference at each RE position and combine with paralog variance.
+
+```{r allelic-variance}
+# Calculate allelic difference at each RE position using the ref/alt columns
+re_table_with_allelic <- re_table_filtered %>%
+    filter(
+        !is.na(fire_ratio_ref),
+        !is.na(fire_ratio_alt),
+        coverage_alt >= min_coverage # Require sufficient alt coverage too
+    ) %>%
+    mutate(
+        allelic_diff = abs(fire_ratio_ref - fire_ratio_alt)
+    )
+
+cat("REs with sufficient ref AND alt coverage:", nrow(re_table_with_allelic), "\n")
+
+# Calculate the mean allelic difference within each group
+allelic_by_group <- re_table_with_allelic %>%
+    group_by(cluster_id, sample, haplotype) %>%
+    summarise(
+        n_res_allelic = n(),
+        mean_allelic_diff = mean(allelic_diff, na.rm = TRUE),
+        sd_allelic_diff = sd(allelic_diff, na.rm = TRUE),
+        cv_allelic_diff = sd_allelic_diff / mean_allelic_diff,
+        .groups = "drop"
+    ) %>%
+    filter(n_res_allelic >= 2)
+
+# Join with paralog variance stats
+variance_comparison <- group_stats %>%
+    inner_join(allelic_by_group, by = c("cluster_id", "sample", "haplotype")) %>%
+    mutate(
+        variance_ratio = sd_fire_ratio / sd_allelic_diff,
+        variance_ratio_log = log2(variance_ratio)
+    )
+
+cat("Groups with both paralog and allelic data:", nrow(variance_comparison), "\n")
+```
+
+## Paralog vs Allelic Variance Scatter
+
+```{r variance-comparison-scatter}
+# Compare paralog SD to allelic SD
+variance_comparison %>%
+    ggplot(aes(x = sd_fire_ratio, y = sd_allelic_diff)) +
+    geom_point(alpha = 0.5, size = 0.5) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+    stat_regline_equation(size = 2) +
+    labs(
+        x = "Paralog SD",
+        y = "Allelic SD",
+        title = "Paralog vs Allelic"
+    ) +
+    coord_fixed()
+mrv_ggsave(glue("{FIGURE_DIR}/paralog_vs_allelic_scatter.pdf"), width = 3, height = 3)
+```
+
+## Variance Distribution Comparison
+
+```{r variance-comparison-histogram}
+# Distribution comparison
+variance_long <- variance_comparison %>%
+    select(cluster_id, sample, haplotype, sd_fire_ratio, sd_allelic_diff) %>%
+    pivot_longer(
+        cols = c(sd_fire_ratio, sd_allelic_diff),
+        names_to = "variance_type",
+        values_to = "variance"
+    ) %>%
+    mutate(
+        variance_type = case_when(
+            variance_type == "sd_fire_ratio" ~ "Paralog",
+            variance_type == "sd_allelic_diff" ~ "Allelic"
+        )
+    )
+
+variance_long %>%
+    ggplot(aes(x = variance, fill = variance_type)) +
+    geom_histogram(bins = 50, alpha = 0.6, position = "identity") +
+    scale_fill_manual(values = c("Paralog" = COLOR_PARALOG, "Allelic" = COLOR_ALLELIC)) +
+    labs(
+        x = "Variance (s.d. within paralog clusters)",
+        y = "Count",
+        fill = "Type",
+        title = "Paralog vs Allelic"
+    ) +
+    theme(legend.key.size = unit(0.3, "cm"))
+
+mrv_ggsave(glue("{FIGURE_DIR}/paralog_vs_allelic_hist.pdf"), width = 3, height = 2)
+```
+
+## Statistical Comparison
+
+```{r variance-comparison-stats}
+# Summary stats with medians for all three metrics
+cat("\n=== Variance Comparison Summary ===\n")
+
+# Mean (of pairwise differences)
+cat("\n--- Mean |diff| ---\n")
+cat(
+    "Paralog mean |diff|:", round(median(variance_comparison$mean_fire_ratio_diff, na.rm = TRUE), 4),
+    "(median),", round(mean(variance_comparison$mean_fire_ratio_diff, na.rm = TRUE), 4), "(mean)\n"
+)
+cat(
+    "Allelic mean |diff|:", round(median(variance_comparison$mean_allelic_diff, na.rm = TRUE), 4),
+    "(median),", round(mean(variance_comparison$mean_allelic_diff, na.rm = TRUE), 4), "(mean)\n"
+)
+
+# SD
+cat("\n--- SD ---\n")
+cat(
+    "Paralog SD:", round(median(variance_comparison$sd_fire_ratio, na.rm = TRUE), 4),
+    "(median),", round(mean(variance_comparison$sd_fire_ratio, na.rm = TRUE), 4), "(mean)\n"
+)
+cat(
+    "Allelic SD:", round(median(variance_comparison$sd_allelic_diff, na.rm = TRUE), 4),
+    "(median),", round(mean(variance_comparison$sd_allelic_diff, na.rm = TRUE), 4), "(mean)\n"
+)
+
+# CV (filter for finite values)
+cv_data_temp <- variance_comparison %>%
+    filter(is.finite(cv_fire_ratio), is.finite(cv_allelic_diff))
+cat("\n--- CV ---\n")
+cat(
+    "Paralog CV:", round(median(cv_data_temp$cv_fire_ratio, na.rm = TRUE), 4),
+    "(median),", round(mean(cv_data_temp$cv_fire_ratio, na.rm = TRUE), 4), "(mean)\n"
+)
+cat(
+    "Allelic CV:", round(median(cv_data_temp$cv_allelic_diff, na.rm = TRUE), 4),
+    "(median),", round(mean(cv_data_temp$cv_allelic_diff, na.rm = TRUE), 4), "(mean)\n"
+)
+
+# Paired comparison for SD
+cat("\n\nPaired t-test (paralog SD vs allelic SD):\n")
+t_test <- t.test(
+    variance_comparison$sd_fire_ratio,
+    variance_comparison$sd_allelic_diff,
+    paired = TRUE
+)
+print(t_test)
+
+# What proportion have higher paralog variance?
+prop_paralog_higher <- mean(variance_comparison$sd_fire_ratio > variance_comparison$sd_allelic_diff, na.rm = TRUE)
+cat("\nProportion where paralog variance > allelic variance:", round(prop_paralog_higher, 3), "\n")
+```
+
+## Coefficient of Variation Comparison
+
+The coefficient of variation (CV = SD/mean) normalizes variance by the mean, useful for comparing
+groups with different baseline values.
+
+```{r cv-comparison-stats}
+# Filter for finite CV values
+cv_data <- variance_comparison %>%
+    filter(is.finite(cv_fire_ratio), is.finite(cv_allelic_diff))
+
+cat("\n=== CV Comparison Summary ===\n")
+cat("\nParalog CV (SD/mean of FIRE ratio):\n")
+summary(cv_data$cv_fire_ratio)
+cat("\nAllelic CV (SD/mean of |ref - alt|):\n")
+summary(cv_data$cv_allelic_diff)
+
+# Paired comparison
+cat("\n\nPaired t-test (paralog CV vs allelic CV):\n")
+t_test_cv <- t.test(
+    cv_data$cv_fire_ratio,
+    cv_data$cv_allelic_diff,
+    paired = TRUE
+)
+print(t_test_cv)
+
+# What proportion have higher paralog CV?
+prop_cv_paralog_higher <- mean(cv_data$cv_fire_ratio > cv_data$cv_allelic_diff, na.rm = TRUE)
+cat("\nProportion where paralog CV > allelic CV:", round(prop_cv_paralog_higher, 3), "\n")
+```
+
+```{r cv-comparison-scatter}
+# Compare paralog CV to allelic CV
+cv_data %>%
+    filter(cv_fire_ratio < 5, cv_allelic_diff < 5) %>% # Remove extreme outliers
+    ggplot(aes(x = cv_fire_ratio, y = cv_allelic_diff)) +
+    geom_point(alpha = 0.5, size = 0.5) +
+    geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+    stat_regline_equation(size = 2) +
+    labs(
+        x = "Paralog CV",
+        y = "Allelic CV",
+        title = "Paralog vs Allelic CV"
+    ) +
+    coord_fixed()
+mrv_ggsave(glue("{FIGURE_DIR}/paralog_vs_allelic_cv_scatter.pdf"), width = 3, height = 3)
+```
+
+```{r cv-comparison-histogram}
+# Distribution comparison of CV
+cv_long <- cv_data %>%
+    filter(cv_fire_ratio < 5, cv_allelic_diff < 5) %>%
+    select(cluster_id, sample, haplotype, cv_fire_ratio, cv_allelic_diff) %>%
+    pivot_longer(
+        cols = c(cv_fire_ratio, cv_allelic_diff),
+        names_to = "cv_type",
+        values_to = "cv"
+    ) %>%
+    mutate(
+        cv_type = case_when(
+            cv_type == "cv_fire_ratio" ~ "Paralog",
+            cv_type == "cv_allelic_diff" ~ "Allelic"
+        )
+    )
+
+cv_long %>%
+    ggplot(aes(x = cv, fill = cv_type)) +
+    geom_histogram(bins = 50, alpha = 0.6, position = "identity") +
+    scale_fill_manual(values = c("Paralog" = COLOR_PARALOG, "Allelic" = COLOR_ALLELIC)) +
+    labs(
+        x = "Coefficient of Variation (SD/mean)",
+        y = "Count",
+        fill = "Type",
+        title = "Paralog vs Allelic CV"
+    ) +
+    theme(legend.key.size = unit(0.3, "cm"))
+
+mrv_ggsave(glue("{FIGURE_DIR}/paralog_vs_allelic_cv_hist.pdf"), width = 3, height = 2)
+```
+
+## Variance Ratio Distribution
+
+```{r variance-ratio-plot}
+# Distribution of variance ratio
+variance_comparison %>%
+    filter(is.finite(variance_ratio_log)) %>%
+    ggplot(aes(x = variance_ratio_log)) +
+    geom_histogram(bins = 50, fill = "steelblue", alpha = 0.7) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "red") +
+    labs(
+        x = "log2(Paralog s.d. / Allelic s.d.)",
+        y = "Count",
+        title = "Ratio of Paralog to Allelic Variance",
+        subtitle = "Positive = more paralog variance, Negative = more allelic variance"
+    )
+mrv_ggsave(glue("{FIGURE_DIR}/variance_ratio_distribution.pdf"), width = 3, height = 2)
+```
+
+```{r variance-ratio-summary}
+cat("\nlog2(paralog/allelic) ratio:\n")
+summary(variance_comparison$variance_ratio_log[is.finite(variance_comparison$variance_ratio_log)])
+```
+
+## Stratified by Sequence Identity
+
+To understand how sequence identity affects the comparison between paralog and allelic variance,
+we stratify the analysis by the median pairwise sequence identity within each cluster.
+
+```{r variance-by-identity-prep}
+# Calculate median identity per cluster from pairwise alignments
+cluster_identity <- re_pairs %>%
+    group_by(cluster_id, sample, haplotype) %>%
+    summarise(
+        median_identity = median(gap_compressed_identity, na.rm = TRUE),
+        mean_identity = mean(gap_compressed_identity, na.rm = TRUE),
+        min_identity = min(gap_compressed_identity, na.rm = TRUE),
+        max_identity = max(gap_compressed_identity, na.rm = TRUE),
+        n_pairs = n(),
+        .groups = "drop"
+    )
+
+# Join with variance comparison data
+variance_by_identity <- variance_comparison %>%
+    inner_join(cluster_identity, by = c("cluster_id", "sample", "haplotype")) %>%
+    mutate(
+        identity_bin = cut(
+            median_identity,
+            breaks = c(0, 0.90, 0.95, 0.98, 0.99, 0.999, 1.0),
+            labels = c("<90%", "90-95%", "95-98%", "98-99%", "99-99.9%", ">99.9%"),
+            include.lowest = TRUE
+        )
+    )
+
+cat("Clusters with variance and identity data:", nrow(variance_by_identity), "\n")
+cat("\nClusters per identity bin:\n")
+table(variance_by_identity$identity_bin)
+```
+
+```{r variance-by-identity-violin}
+# Prepare data in long format for violin plot with all three stat types
+variance_by_identity_long <- variance_by_identity %>%
+    filter(!is.na(identity_bin)) %>%
+    filter(is.finite(cv_fire_ratio), is.finite(cv_allelic_diff)) %>%
+    select(
+        cluster_id, sample, haplotype, identity_bin,
+        mean_fire_ratio_diff, mean_allelic_diff,
+        sd_fire_ratio, sd_allelic_diff,
+        cv_fire_ratio, cv_allelic_diff
+    ) %>%
+    pivot_longer(
+        cols = c(
+            mean_fire_ratio_diff, mean_allelic_diff,
+            sd_fire_ratio, sd_allelic_diff,
+            cv_fire_ratio, cv_allelic_diff
+        ),
+        names_to = "metric",
+        values_to = "value"
+    ) %>%
+    mutate(
+        stat_type = case_when(
+            str_detect(metric, "^mean_") ~ "Mean |diff|",
+            str_detect(metric, "^sd_") ~ "SD",
+            str_detect(metric, "^cv_") ~ "CV"
+        ),
+        stat_type = factor(stat_type, levels = c("Mean |diff|", "SD", "CV")),
+        group_type = case_when(
+            str_detect(metric, "fire_ratio") ~ "Paralog",
+            str_detect(metric, "allelic_diff$") ~ "Allelic"
+        ),
+        group_type = factor(group_type, levels = c("Paralog", "Allelic"))
+    )
+
+# Calculate stats for annotations (per identity bin and stat type)
+# Include median for each group type
+variance_identity_bin_stats <- variance_by_identity_long %>%
+    group_by(identity_bin, stat_type, group_type) %>%
+    summarise(
+        median_val = median(value, na.rm = TRUE),
+        .groups = "drop"
+    ) %>%
+    pivot_wider(
+        names_from = group_type,
+        values_from = median_val,
+        names_prefix = "med_"
+    ) %>%
+    left_join(
+        variance_by_identity_long %>%
+            group_by(identity_bin, stat_type) %>%
+            summarise(
+                n_clusters = n_distinct(paste(cluster_id, sample, haplotype)),
+                y_pos = max(value, na.rm = TRUE) * 1.05,
+                .groups = "drop"
+            ),
+        by = c("identity_bin", "stat_type")
+    )
+
+# Violin plot comparing paralog vs allelic by identity bin, faceted by stat type
+variance_by_identity_long %>%
+    ggplot(aes(x = identity_bin, y = value, fill = group_type)) +
+    geom_violin(alpha = 0.7, scale = "width", position = position_dodge(0.8)) +
+    geom_boxplot(width = 0.15, position = position_dodge(0.8), outlier.shape = NA, alpha = 0.8) +
+    geom_text(
+        data = variance_identity_bin_stats,
+        aes(
+            x = identity_bin, y = y_pos,
+            label = glue("n={scales::comma(n_clusters)}\nP:{round(med_Paralog, 2)} A:{round(med_Allelic, 2)}")
+        ),
+        size = 1.8, vjust = 0, inherit.aes = FALSE
+    ) +
+    facet_wrap(~stat_type, scales = "free_y", ncol = 1) +
+    scale_fill_manual(values = c("Paralog" = COLOR_PARALOG, "Allelic" = COLOR_ALLELIC)) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.20))) +
+    labs(
+        x = "Median cluster sequence identity",
+        y = "Value",
+        fill = "Type",
+        title = "Paralog vs Allelic by sequence identity",
+        caption = "n = clusters, P = Paralog median, A = Allelic median"
+    ) +
+    theme(
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        legend.position = "top",
+        legend.key.size = unit(0.4, "cm"),
+        strip.text = element_text(face = "bold")
+    )
+mrv_ggsave(glue("{FIGURE_DIR}/variance_by_identity_violin.pdf"), width = 4, height = 4)
+```
+
+## Ratio by Identity (Mean, SD, CV)
+
+```{r ratio-by-identity}
+# Calculate ratios for all three stat types
+variance_by_identity <- variance_by_identity %>%
+    mutate(
+        mean_ratio_log = log2(mean_fire_ratio_diff / mean_allelic_diff),
+        sd_ratio_log = log2(sd_fire_ratio / sd_allelic_diff),
+        cv_ratio_log = log2(cv_fire_ratio / cv_allelic_diff)
+    )
+
+# Prepare long format for faceted plot
+ratio_by_identity_long <- variance_by_identity %>%
+    filter(!is.na(identity_bin)) %>%
+    filter(
+        is.finite(mean_ratio_log),
+        is.finite(sd_ratio_log),
+        is.finite(cv_ratio_log)
+    ) %>%
+    select(
+        cluster_id, sample, haplotype, identity_bin,
+        mean_ratio_log, sd_ratio_log, cv_ratio_log
+    ) %>%
+    pivot_longer(
+        cols = c(mean_ratio_log, sd_ratio_log, cv_ratio_log),
+        names_to = "ratio_type",
+        values_to = "ratio_log"
+    ) %>%
+    mutate(
+        stat_type = case_when(
+            ratio_type == "mean_ratio_log" ~ "Mean |diff|",
+            ratio_type == "sd_ratio_log" ~ "SD",
+            ratio_type == "cv_ratio_log" ~ "CV"
+        ),
+        stat_type = factor(stat_type, levels = c("Mean |diff|", "SD", "CV"))
+    )
+
+# Calculate stats for annotations
+ratio_stats <- ratio_by_identity_long %>%
+    group_by(identity_bin, stat_type) %>%
+    summarise(
+        n = n_distinct(paste(cluster_id, sample, haplotype)),
+        pct_paralog_higher = mean(ratio_log > 0, na.rm = TRUE) * 100,
+        y_pos = max(ratio_log, na.rm = TRUE) * 1.05,
+        .groups = "drop"
+    )
+
+# Faceted violin plot
+ratio_by_identity_long %>%
+    ggplot(aes(x = identity_bin, y = ratio_log, fill = identity_bin)) +
+    geom_violin(alpha = 0.7, scale = "width") +
+    geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "red") +
+    geom_text(
+        data = ratio_stats,
+        aes(
+            x = identity_bin, y = y_pos,
+            label = glue("n={scales::comma(n)}\n{round(pct_paralog_higher)}%")
+        ),
+        size = 2, vjust = 0, inherit.aes = FALSE
+    ) +
+    facet_wrap(~stat_type, scales = "free_y", ncol = 1) +
+    scale_fill_viridis_d(option = "plasma", direction = -1) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.18))) +
+    labs(
+        x = "Median cluster sequence identity",
+        y = "log2(Paralog / Allelic)",
+        title = "Ratio by sequence identity",
+        caption = "% = clusters where paralog > allelic"
+    ) +
+    theme(
+        legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(face = "bold")
+    )
+mrv_ggsave(glue("{FIGURE_DIR}/ratio_by_identity.pdf"), width = 4, height = 4)
+```
+
+## Statistical Tests by Identity
+
+```{r ratio-by-identity-stats}
+# Summary statistics table for all three stat types
+ratio_summary_stats <- ratio_by_identity_long %>%
+    group_by(stat_type, identity_bin) %>%
+    summarise(
+        n = n_distinct(paste(cluster_id, sample, haplotype)),
+        median_ratio = median(ratio_log, na.rm = TRUE),
+        mean_ratio = mean(ratio_log, na.rm = TRUE),
+        pct_paralog_higher = mean(ratio_log > 0, na.rm = TRUE) * 100,
+        .groups = "drop"
+    )
+
+ratio_summary_stats %>%
+    mutate(pct_paralog_higher = round(pct_paralog_higher, 1)) %>%
+    knitr::kable(
+        digits = 3,
+        caption = "Ratio statistics by sequence identity (all metrics)",
+        col.names = c(
+            "Metric", "Identity bin", "N clusters", "Median log2 ratio",
+            "Mean log2 ratio", "% Paralog > Allelic"
+        )
+    )
+
+# Statistical tests: does ratio differ by identity for each stat type?
+cat("\n=== Kruskal-Wallis tests: ratio ~ identity bin ===\n")
+
+for (stat in c("Mean |diff|", "SD", "CV")) {
+    cat("\n---", stat, "ratio ---\n")
+    test_data <- ratio_by_identity_long %>%
+        filter(stat_type == stat, is.finite(ratio_log))
+    kruskal_result <- kruskal.test(ratio_log ~ identity_bin, data = test_data)
+    cat(
+        "Chi-squared:", round(kruskal_result$statistic, 2),
+        ", df:", kruskal_result$parameter,
+        ", p-value:", format(kruskal_result$p.value, scientific = TRUE, digits = 3), "\n"
+    )
+}
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```

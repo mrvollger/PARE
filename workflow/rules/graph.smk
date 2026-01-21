@@ -159,3 +159,79 @@ rule paf_to_graphml:
         format="graphml",
     script:
         "../scripts/paf_to_graph.py"
+
+
+rule split_annotated_res_for_sequence_extraction:
+    """Split annotated_res.bed into per-sample BED files for sequence extraction."""
+    input:
+        bed=rules.paf_to_graphml.output.annotated_res,
+    output:
+        bed=temp("temp/graph/annotated_res.{sample_id}.bed"),
+    log:
+        "logs/graph/split_res_for_seqs_{sample_id}.log",
+    threads: 1
+    resources:
+        mem_mb=1024,
+        runtime=10,
+    run:
+        patterns = get_contig_patterns_for_sample_id(wildcards.sample_id)
+        with open(input.bed) as f_in, open(output.bed, "w") as f_out, open(log[0], "w") as log_f:
+            count = 0
+            for line in f_in:
+                if line.startswith("#"):
+                    continue
+                fields = line.strip().split("\t")
+                chrom = fields[0]
+                if any(p.search(chrom) for p in patterns):
+                    # Write BED4 format: chrom, start, end, re_id
+                    f_out.write(f"{fields[0]}\t{fields[1]}\t{fields[2]}\t{fields[3]}\n")
+                    count += 1
+            log_f.write(f"Extracted {count} REs for {wildcards.sample_id}\n")
+
+
+rule extract_re_sequences_for_sample:
+    """Extract RE sequences for a specific sample using its assembly."""
+    input:
+        bed=rules.split_annotated_res_for_sequence_extraction.output.bed,
+        assembly=get_assembly,
+    output:
+        fasta=temp("temp/graph/annotated_res.{sample_id}.fa"),
+    log:
+        "logs/graph/extract_re_seqs_{sample_id}.log",
+    conda:
+        "../envs/bfx.yml"
+    threads: 1
+    resources:
+        mem_mb=4096,
+        runtime=30,
+    shell:
+        """
+        rb get-fasta \
+            --fasta {input.assembly} \
+            --bed {input.bed} \
+            --name \
+            > {output.fasta} 2> {log}
+        """
+
+
+rule merge_annotated_res_fastas:
+    """Merge all per-sample RE FASTA files into one."""
+    input:
+        fastas=expand(
+            rules.extract_re_sequences_for_sample.output.fasta,
+            sample_id=get_all_sample_ids(),
+        ),
+    output:
+        fasta="results/graphs/annotated_res.fa",
+    log:
+        "logs/graph/merge_res_fastas.log",
+    threads: 1
+    resources:
+        mem_mb=2048,
+        runtime=10,
+    shell:
+        """
+        cat {input.fastas} > {output.fasta} 2> {log}
+        """
+
+

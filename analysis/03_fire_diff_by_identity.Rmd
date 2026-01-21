@@ -1,0 +1,227 @@
+---
+title: "Paralog FIRE Difference Stratified by Sequence Identity"
+author: "PARE Pipeline"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Overview
+
+Analyze how the difference in FIRE ratio between paralog pairs relates to their
+sequence identity (gap-compressed identity from all-by-all alignments).
+
+## Load Data
+
+```{r load-data}
+library(tidyverse)
+library(ggplot2)
+library(glue)
+library(scales)
+library(hexbin)
+library(ggpubr)
+
+# Install mrvplot if not available
+if (!requireNamespace("mrvplot", quietly = TRUE)) {
+    devtools::install_github("mrvollger/mrvplot")
+}
+library(mrvplot)
+theme_set(mrv_grid())
+
+# Load pre-processed data from data loader
+load("data/paralog_data.RData")
+
+cat("Loaded data:\n")
+cat("  - re_pairs:", nrow(re_pairs), "paralog pairs\n")
+```
+
+## Calculate Pairwise FIRE Difference
+
+```{r pairwise-fire-diff}
+# Calculate pairwise FIRE difference for each paralog pair
+# Using the re_pairs table which has FIRE ratios for both query and target REs
+re_pairs_with_fire_diff <- re_pairs %>%
+    filter(
+        !is.na(fire_ratio_ref_query),
+        !is.na(fire_ratio_ref_target)
+    ) %>%
+    mutate(
+        fire_diff = abs(fire_ratio_ref_query - fire_ratio_ref_target),
+        # Create identity bins
+        identity_bin = cut(
+            gap_compressed_identity,
+            breaks = c(0, 0.90, 0.95, 0.98, 0.99, 0.999, 1.0),
+            labels = c("<90%", "90-95%", "95-98%", "98-99%", "99-99.9%", ">99.9%"),
+            include.lowest = TRUE
+        )
+    )
+
+cat("Paralog pairs with FIRE data:", nrow(re_pairs_with_fire_diff), "\n")
+cat("\nPairs per identity bin:\n")
+table(re_pairs_with_fire_diff$identity_bin)
+```
+
+## FIRE Difference by Identity - Violin Plot
+
+```{r fire-diff-by-identity-violin}
+# Calculate summary stats for annotations
+bin_stats <- re_pairs_with_fire_diff %>%
+    filter(!is.na(identity_bin)) %>%
+    group_by(identity_bin) %>%
+    summarise(
+        n_pairs = n(),
+        n_clusters = n_distinct(cluster_id),
+        median_diff = median(fire_diff, na.rm = TRUE),
+        y_pos = max(fire_diff, na.rm = TRUE) * 1.05,
+        .groups = "drop"
+    )
+
+# Violin plot with n, cluster count, and median annotations
+re_pairs_with_fire_diff %>%
+    filter(!is.na(identity_bin)) %>%
+    ggplot(aes(x = identity_bin, y = fire_diff, fill = identity_bin)) +
+    geom_violin(alpha = 0.7, scale = "width") +
+    geom_boxplot(width = 0.1, fill = "white", outlier.shape = NA) +
+    geom_text(
+        data = bin_stats,
+        aes(
+            x = identity_bin, y = y_pos,
+            label = glue("n={scales::comma(n_pairs)}\nc={scales::comma(n_clusters)}\nmed={round(median_diff, 3)}")
+        ),
+        size = 2.5, vjust = 0, inherit.aes = FALSE
+    ) +
+    scale_fill_viridis_d(option = "plasma", direction = -1) +
+    scale_y_continuous(expand = expansion(mult = c(0.05, 0.18))) +
+    labs(
+        x = "Gap-compressed sequence identity",
+        y = "|FIRE ratio difference|",
+        title = "Paralog FIRE divergence by sequence identity",
+        caption = "n = pairs, c = clusters, med = median |diff|"
+    ) +
+    theme(legend.position = "none")
+mrv_ggsave(glue("{FIGURE_DIR}/fire_diff_by_identity_violin.pdf"), width = 4, height = 3.5)
+```
+
+## FIRE Difference vs Identity - Hexbin Plot
+
+```{r fire-diff-by-identity-scatter}
+# Hexbin plot of divergence (1 - identity) vs FIRE difference
+# Using divergence on log10 scale spreads out high-identity pairs
+# Cap at 0.0005 (99.95% identity) since we can't plot 100% on log scale
+re_pairs_with_fire_diff %>%
+    mutate(
+        divergence = 1 - gap_compressed_identity,
+        divergence = pmax(divergence, 0.0005) # Cap at 99.95% identity
+    ) %>%
+    ggplot(aes(x = divergence, y = fire_diff)) +
+    geom_hex(bins = 50) +
+    scale_fill_distiller("", palette = "Spectral", trans = "log10") +
+    scale_x_continuous(
+        trans = "log10",
+        breaks = c(0.0005, 0.001, 0.01, 0.05, 0.1, 0.2),
+        labels = c(">99.95%", "99.9%", "99%", "95%", "90%", "80%")
+    ) +
+    annotation_logticks(sides = "b") +
+    geom_smooth(method = "lm", color = "darkred", se = FALSE, linewidth = 1) +
+    stat_cor(method = "spearman", label.x.npc = "left", label.y.npc = "top", size = 3) +
+    stat_regline_equation(label.x.npc = "left", label.y.npc = 0.85, size = 3) +
+    labs(
+        x = "Gap-compressed sequence identity (log10 divergence scale)",
+        y = "|FIRE ratio difference|",
+        title = "Paralog FIRE divergence vs sequence identity"
+    ) +
+    mrv_grid() +
+    theme(legend.position = "right")
+mrv_ggsave(glue("{FIGURE_DIR}/fire_diff_vs_identity_hexbin.pdf"), width = 5, height = 3)
+```
+
+## Summary Statistics by Identity Bin
+
+```{r fire-diff-by-identity-stats}
+# Summary statistics by identity bin
+fire_stats_by_identity <- re_pairs_with_fire_diff %>%
+    filter(!is.na(identity_bin)) %>%
+    group_by(identity_bin) %>%
+    summarise(
+        n_pairs = n(),
+        mean_fire_diff = mean(fire_diff, na.rm = TRUE),
+        median_fire_diff = median(fire_diff, na.rm = TRUE),
+        sd_fire_diff = sd(fire_diff, na.rm = TRUE),
+        pct_diff_gt_0.1 = mean(fire_diff > 0.1, na.rm = TRUE) * 100,
+        pct_diff_gt_0.2 = mean(fire_diff > 0.2, na.rm = TRUE) * 100,
+        .groups = "drop"
+    )
+
+fire_stats_by_identity %>%
+    knitr::kable(
+        digits = 3,
+        caption = "FIRE ratio difference statistics by sequence identity bin",
+        col.names = c(
+            "Identity", "N pairs", "Mean |diff|", "Median |diff|",
+            "SD |diff|", "% diff > 0.1", "% diff > 0.2"
+        )
+    )
+```
+
+## Correlation Analysis
+
+```{r fire-diff-correlation}
+# Correlation between identity and FIRE difference
+cor_test <- cor.test(
+    re_pairs_with_fire_diff$gap_compressed_identity,
+    re_pairs_with_fire_diff$fire_diff,
+    method = "spearman"
+)
+
+cat("\n=== Correlation: Sequence Identity vs FIRE Difference ===\n")
+cat("Spearman correlation:", round(cor_test$estimate, 4), "\n")
+cat("p-value:", format(cor_test$p.value, scientific = TRUE, digits = 3), "\n")
+```
+
+## High Identity Pairs Analysis
+
+```{r high-identity-low-fire-diff}
+# What proportion of high-identity pairs (>98%) have similar FIRE ratios?
+high_identity_pairs <- re_pairs_with_fire_diff %>%
+    filter(gap_compressed_identity >= 0.98)
+
+cat("\n=== High Identity Pairs (>=98% identity) ===\n")
+cat("Total pairs:", nrow(high_identity_pairs), "\n")
+cat("Mean FIRE diff:", round(mean(high_identity_pairs$fire_diff, na.rm = TRUE), 3), "\n")
+cat("Median FIRE diff:", round(median(high_identity_pairs$fire_diff, na.rm = TRUE), 3), "\n")
+cat("% with FIRE diff < 0.05:", round(mean(high_identity_pairs$fire_diff < 0.05, na.rm = TRUE) * 100, 1), "%\n")
+cat("% with FIRE diff < 0.10:", round(mean(high_identity_pairs$fire_diff < 0.10, na.rm = TRUE) * 100, 1), "%\n")
+cat("% with FIRE diff > 0.20:", round(mean(high_identity_pairs$fire_diff > 0.20, na.rm = TRUE) * 100, 1), "%\n")
+```
+
+## Density Plot by Identity Bin
+
+```{r fire-diff-density-by-identity}
+# Density plot faceted by identity bin
+re_pairs_with_fire_diff %>%
+    filter(!is.na(identity_bin)) %>%
+    ggplot(aes(x = fire_diff, fill = identity_bin)) +
+    geom_density(alpha = 0.7) +
+    facet_wrap(~identity_bin, ncol = 1, scales = "free_y") +
+    scale_fill_viridis_d(option = "plasma", direction = -1) +
+    labs(
+        x = "|FIRE ratio difference|",
+        y = "Density",
+        title = "Distribution of FIRE differences by identity"
+    ) +
+    theme(legend.position = "none")
+mrv_ggsave(glue("{FIGURE_DIR}/fire_diff_density_by_identity.pdf"), width = 4, height = 5)
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```

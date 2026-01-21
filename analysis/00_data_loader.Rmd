@@ -1,0 +1,235 @@
+---
+title: "Data Loader - Paralog Chromatin Accessibility Analysis"
+author: "PARE Pipeline"
+date: "`r Sys.Date()`"
+output:
+  html_document:
+    toc: true
+    toc_float: true
+    code_folding: show
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
+```
+
+## Overview
+
+This script loads and prepares the primary dataframes for the paralog chromatin accessibility analysis.
+
+**Output dataframes saved to RData:**
+- `re_table_filtered` - REs with cluster assignments and FIRE ratios (coverage filtered, groups with >=2 REs)
+- `re_pairs` - Paralog pairs with FIRE data for both REs
+
+## Load Libraries
+
+```{r libraries}
+library(tidyverse)
+library(ggplot2)
+library(glue)
+library(data.table)
+library(hexbin)
+library(scales)
+
+# Install mrvplot if not available
+if (!requireNamespace("mrvplot", quietly = TRUE)) {
+    message("Installing mrvplot from GitHub...")
+    devtools::install_github("mrvollger/mrvplot")
+}
+library(mrvplot)
+
+# Use mrvplot theme
+theme_set(mrv_grid())
+
+# Color palette for paralog vs allelic comparisons
+COLOR_PARALOG <- "darkred"
+COLOR_ALLELIC <- "gray40"
+
+# Create output directory for figures
+FIGURE_DIR <- "figures"
+if (!dir.exists(FIGURE_DIR)) {
+    dir.create(FIGURE_DIR, recursive = TRUE)
+}
+
+# Create output directory for data
+DATA_DIR <- "data"
+if (!dir.exists(DATA_DIR)) {
+    dir.create(DATA_DIR, recursive = TRUE)
+}
+
+# Minimum coverage threshold
+min_coverage <- 10
+```
+
+## Load RE Table
+
+Load the RE table with cluster assignments and peak/FIRE information,
+then calculate FIRE ratios and filter for sufficient coverage.
+
+```{r load-re-table}
+# Load REs with cluster assignments and peak information
+re_table <- read_tsv(
+    "results/pileup/peaks_with_clusters.bed.gz",
+    col_types = cols(.default = col_guess())
+) %>%
+    rename(chrom = `#chrom`) %>%
+    mutate(
+        # Calculate FIRE ratio (proportion of fibers with accessible chromatin)
+        fire_ratio_ref = fire_coverage_ref / coverage_ref,
+        fire_ratio_alt = fire_coverage_alt / coverage_alt,
+        # Handle division by zero
+        fire_ratio_ref = if_else(coverage_ref == 0, NA_real_, fire_ratio_ref),
+        fire_ratio_alt = if_else(coverage_alt == 0, NA_real_, fire_ratio_alt)
+    )
+
+cat("Loaded", nrow(re_table), "REs\n")
+cat("Unique clusters:", n_distinct(re_table$cluster_id), "\n")
+cat("Samples:", paste(unique(re_table$sample), collapse = ", "), "\n")
+
+# Filter for sufficient coverage
+re_table_coverage_filtered <- re_table %>%
+    filter(coverage_ref >= min_coverage)
+
+cat("REs with coverage >=", min_coverage, ":", nrow(re_table_coverage_filtered), "\n")
+cat("REs filtered out:", nrow(re_table) - nrow(re_table_coverage_filtered), "\n")
+
+# Filter to keep only groups (cluster, sample, haplotype) with at least 2 REs
+# This is essential for paralog analysis - we need at least 2 REs to compare
+groups_with_multiple_res <- re_table_coverage_filtered %>%
+    count(cluster_id, sample, haplotype) %>%
+    filter(n >= 2) %>%
+    select(-n)
+
+re_table_filtered <- re_table_coverage_filtered %>%
+    semi_join(groups_with_multiple_res, by = c("cluster_id", "sample", "haplotype"))
+
+n_singleton_groups <- nrow(re_table_coverage_filtered) - nrow(re_table_filtered)
+cat("REs in singleton groups removed:", n_singleton_groups, "\n")
+cat("REs after group filter:", nrow(re_table_filtered), "\n")
+
+glimpse(re_table_filtered)
+```
+
+## Load RE Pairwise Table (Paralogs)
+
+Load pairwise RE alignments from all-by-all analysis and filter for **paralog pairs** -
+pairs where both REs are in the same cluster, same sample, and same haplotype.
+Then join with RE table to add FIRE data and filter for pairs where both REs pass coverage thresholds.
+
+```{r load-re-pairs}
+# Load all pairwise RE alignments
+all_pairs <- read_tsv(
+    "results/all_by_all/re_pairwise_identity.tsv.gz",
+    col_types = cols(
+        query_re_id = col_character(),
+        target_re_id = col_character(),
+        query_cluster = col_character(),
+        target_cluster = col_character(),
+        same_cluster = col_logical(),
+        query_sample = col_character(),
+        target_sample = col_character(),
+        query_haplotype = col_character(),
+        target_haplotype = col_character(),
+        .default = col_guess()
+    )
+)
+
+cat("Total pairwise alignments:", nrow(all_pairs), "\n")
+
+# Filter for paralog pairs: same cluster, same sample, same haplotype
+re_pairs_raw <- all_pairs %>%
+    filter(
+        same_cluster == TRUE,
+        query_sample == target_sample,
+        query_haplotype == target_haplotype
+    ) %>%
+    rename(
+        cluster_id = query_cluster,
+        sample = query_sample,
+        haplotype = query_haplotype
+    ) %>%
+    select(-target_cluster, -target_sample, -target_haplotype, -same_cluster)
+
+cat("Paralog pairs (same cluster/sample/haplotype):", nrow(re_pairs_raw), "\n")
+
+# Join RE metadata for both query and target REs
+re_cols_to_join <- c("re_id", "fire_ratio_ref", "fire_ratio_alt", "coverage_ref", "coverage_alt")
+
+re_pairs <- re_pairs_raw %>%
+    # Join query RE info
+    inner_join(
+        re_table_filtered %>% select(all_of(re_cols_to_join)),
+        by = c("query_re_id" = "re_id"),
+        suffix = c("", "_query")
+    ) %>%
+    rename(
+        fire_ratio_ref_query = fire_ratio_ref,
+        fire_ratio_alt_query = fire_ratio_alt,
+        coverage_ref_query = coverage_ref,
+        coverage_alt_query = coverage_alt
+    ) %>%
+    # Join target RE info
+    inner_join(
+        re_table_filtered %>% select(all_of(re_cols_to_join)),
+        by = c("target_re_id" = "re_id"),
+        suffix = c("", "_target")
+    ) %>%
+    rename(
+        fire_ratio_ref_target = fire_ratio_ref,
+        fire_ratio_alt_target = fire_ratio_alt,
+        coverage_ref_target = coverage_ref,
+        coverage_alt_target = coverage_alt
+    )
+
+# Report filtering stats
+n_before <- nrow(re_pairs_raw)
+n_after <- nrow(re_pairs)
+n_removed <- n_before - n_after
+pct_removed <- round(100 * n_removed / n_before, 1)
+
+cat("\n=== Filtering pairs for coverage ===\n")
+cat("Pairs before filtering:", n_before, "\n")
+cat("Pairs after filtering:", n_after, "\n")
+cat("Pairs removed:", n_removed, "(", pct_removed, "%)\n")
+cat("Clusters with paralogs:", n_distinct(re_pairs$cluster_id), "\n")
+
+glimpse(re_pairs)
+```
+
+## Save Data
+
+Save the primary dataframes to RData for use in subsequent analyses.
+
+```{r save-data}
+save(
+    re_table_filtered,
+    re_pairs,
+    min_coverage,
+    COLOR_PARALOG,
+    COLOR_ALLELIC,
+    FIGURE_DIR,
+    file = glue("{DATA_DIR}/paralog_data.RData")
+)
+
+cat("\n=== Data saved to", glue("{DATA_DIR}/paralog_data.RData"), "===\n")
+cat("Objects saved:\n")
+cat("  - re_table_filtered:", nrow(re_table_filtered), "rows\n")
+cat("  - re_pairs:", nrow(re_pairs), "rows\n")
+cat("  - min_coverage:", min_coverage, "\n")
+cat("  - COLOR_PARALOG, COLOR_ALLELIC, FIGURE_DIR\n")
+```
+
+## Summary
+
+```{r summary}
+cat("=== Data Loading Summary ===\n\n")
+cat("REs loaded:", nrow(re_table_filtered), "(after coverage + group filter)\n")
+cat("Paralog pairs:", nrow(re_pairs), "\n")
+cat("Unique clusters:", n_distinct(re_table_filtered$cluster_id), "\n")
+```
+
+## Session Info
+
+```{r session-info}
+sessionInfo()
+```

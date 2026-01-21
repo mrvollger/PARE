@@ -1,8 +1,8 @@
 channels:
-  - bioconda
   - conda-forge
-  - defaults
+  - bioconda
 dependencies:
-  - python >=3.9
-  - pandas >=1.5
-  - numpy >=1.23
+  - python >=3.10,<3.13
+  - pandas
+  - numpy
+  - polars-lts-cpu ==1.33.1
