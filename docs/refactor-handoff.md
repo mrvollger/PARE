@@ -170,8 +170,11 @@ Regenerate `samples.tsv` from the slop BED with the one-liner in
 - `test_data/`, `data/`, `figures/`, `tmp.pdf`, `analysis/tmp.pdf`, `paralog.paf`, `paralog_graph.graphml`
 - `claude.md` — user's scratch
 
-### Analysis Rmd files (modified but deferred)
+### Analysis Rmd files (committed as snapshot, need schema update)
 - `analysis/00_data_loader.Rmd` / `01_paralog_variance.Rmd` / `02_paralog_vs_allelic.Rmd` / `03_fire_diff_by_identity.Rmd` / `paralog_accessibility.Rmd`
 
-These predate the rewrite; defer committing until we re-run the pipeline on
-real data and confirm the analyses still work against the new output schema.
+Committed at their pre-rewrite state in `4fc82b8`. They still load the old
+`annotated_res.bed` columns (`chrom/start/end/re_id/cluster_id/sample/haplotype`).
+Once the new pipeline runs on real data, update the loader in
+`00_data_loader.Rmd` to consume the new schema from `paf_to_graph.py`:
+`asm_chr/asm_start/asm_end/re_id/cluster_id/consensus_peak_id/sample_id/haplotype_sample/Individual_ID/Haplotype/is_peak/is_primary_sample`.
