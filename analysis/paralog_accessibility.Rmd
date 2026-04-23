@@ -92,13 +92,13 @@ cat("Samples:", paste(unique(re_table$sample), collapse = ", "), "\n")
 
 # Filter for sufficient coverage
 min_coverage <- 10
-re_table_filtered <- re_table %>%
+re_table <- re_table %>%
     filter(coverage_ref >= min_coverage)
 
-cat("REs with coverage >=", min_coverage, ":", nrow(re_table_filtered), "\n")
-cat("REs filtered out:", nrow(re_table) - nrow(re_table_filtered), "\n")
+cat("REs with coverage >=", min_coverage, ":", nrow(re_table), "\n")
+cat("REs filtered out:", nrow(re_table) - nrow(re_table), "\n")
 
-glimpse(re_table_filtered)
+glimpse(re_table)
 ```
 
 ### RE Pairwise Table (Paralogs)
@@ -144,7 +144,7 @@ re_pairs_raw <- all_pairs %>%
 cat("Paralog pairs (same cluster/sample/haplotype):", nrow(re_pairs_raw), "\n")
 
 # Get the set of REs that pass coverage filter
-passing_res <- re_table_filtered$re_id
+passing_res <- re_table$re_id
 
 # Join RE metadata for both query and target REs
 re_cols_to_join <- c("re_id", "fire_ratio_ref", "fire_ratio_alt", "coverage_ref", "coverage_alt")
@@ -152,7 +152,7 @@ re_cols_to_join <- c("re_id", "fire_ratio_ref", "fire_ratio_alt", "coverage_ref"
 re_pairs <- re_pairs_raw %>%
     # Join query RE info
     inner_join(
-        re_table_filtered %>% select(all_of(re_cols_to_join)),
+        re_table %>% select(all_of(re_cols_to_join)),
         by = c("query_re_id" = "re_id"),
         suffix = c("", "_query")
     ) %>%
@@ -164,7 +164,7 @@ re_pairs <- re_pairs_raw %>%
     ) %>%
     # Join target RE info
     inner_join(
-        re_table_filtered %>% select(all_of(re_cols_to_join)),
+        re_table %>% select(all_of(re_cols_to_join)),
         by = c("target_re_id" = "re_id"),
         suffix = c("", "_target")
     ) %>%
@@ -218,7 +218,7 @@ Filter to clusters that have multiple paralogs on the same sample and haplotype.
 
 ```{r paralog-groups}
 # Count paralogs per cluster/sample/haplotype
-paralog_counts <- re_table_filtered %>%
+paralog_counts <- re_table %>%
     group_by(cluster_id, sample, haplotype) %>%
     summarise(
         n_paralogs = n(),
@@ -251,7 +251,7 @@ For each paralog group, calculate the variance and range of FIRE ratios.
 
 ```{r within-group-variance}
 # Join back to get the actual RE data for paralog groups
-paralogs <- re_table_filtered %>%
+paralogs <- re_table %>%
     inner_join(paralog_groups, by = c("cluster_id", "sample", "haplotype"))
 
 # Helper function to calculate mean of all pairwise absolute differences
@@ -509,36 +509,20 @@ Compare variance between paralogs (within same sample/haplotype) to allelic vari
 - **Allelic variance**: Difference between `fire_ratio_ref` and `fire_ratio_alt` at each RE position (comparing the two haplotypes at the same genomic location)
 
 ```{r paralog-vs-allelic}
-# Calculate allelic difference at each RE position using the ref/alt columns
-# These columns compare the coverage on the reference haplotype vs the alternate haplotype
-# at each RE's genomic position
-re_table_with_allelic <- re_table_filtered %>%
-    filter(
-        !is.na(fire_ratio_ref),
-        !is.na(fire_ratio_alt),
-        coverage_alt >= min_coverage # Require sufficient alt coverage too
-    ) %>%
-    mutate(
-        allelic_diff = abs(fire_ratio_ref - fire_ratio_alt)
-    )
+# Use pre-computed allelic_diff and has_allelic_data from re_table
+# The data loader already computes: allelic_diff = abs(fire_ratio_ref - fire_ratio_alt)
+re_table_with_allelic <- re_table %>%
+    filter(has_allelic_data)
 
 cat("REs with sufficient ref AND alt coverage:", nrow(re_table_with_allelic), "\n")
 
-# For a fair comparison, calculate the SD of allelic differences within each group
-# This makes it comparable to sd_fire_ratio (SD of FIRE ratios across paralogs)
-allelic_by_group <- re_table_with_allelic %>%
-    group_by(cluster_id, sample, haplotype) %>%
-    summarise(
-        n_res_allelic = n(),
-        mean_allelic_diff = mean(allelic_diff, na.rm = TRUE),
-        sd_allelic_diff = sd(allelic_diff, na.rm = TRUE), # SD of allelic diffs within group
-        .groups = "drop"
-    ) %>%
-    filter(n_res_allelic >= 2) # Need at least 2 REs to calculate SD
-
-# Join with paralog variance stats
+# Use pre-computed group-level allelic stats from group_stats
+# group_stats already has: mean_allelic_diff, sd_allelic_diff, n_res_allelic
 variance_comparison <- group_stats %>%
-    inner_join(allelic_by_group, by = c("cluster_id", "sample", "haplotype"))
+    filter(
+        !is.na(mean_allelic_diff),
+        n_res_allelic >= 2 # Need at least 2 REs to calculate SD
+    )
 glimpse(variance_comparison)
 cat("Groups with both paralog and allelic data:", nrow(variance_comparison), "\n")
 ```
@@ -649,24 +633,13 @@ To understand how sequence identity affects the comparison between paralog and a
 we stratify the analysis by the median pairwise sequence identity within each cluster.
 
 ```{r variance-by-identity-prep}
-# Calculate median identity per cluster from pairwise alignments
-cluster_identity <- re_pairs %>%
-    group_by(cluster_id, sample, haplotype) %>%
-    summarise(
-        median_identity = median(gap_compressed_identity, na.rm = TRUE),
-        mean_identity = mean(gap_compressed_identity, na.rm = TRUE),
-        min_identity = min(gap_compressed_identity, na.rm = TRUE),
-        max_identity = max(gap_compressed_identity, na.rm = TRUE),
-        n_pairs = n(),
-        .groups = "drop"
-    )
-
-# Join with variance comparison data
+# Use pre-computed identity stats from group_stats
+# group_stats already has: group_median_identity, group_mean_identity, group_min_identity, group_max_identity
 variance_by_identity <- variance_comparison %>%
-    inner_join(cluster_identity, by = c("cluster_id", "sample", "haplotype")) %>%
+    filter(!is.na(group_median_identity)) %>%
     mutate(
         identity_bin = cut(
-            median_identity,
+            group_median_identity,
             breaks = c(0, 0.90, 0.95, 0.98, 0.99, 0.999, 1.0),
             labels = c("<90%", "90-95%", "95-98%", "98-99%", "99-99.9%", ">99.9%"),
             include.lowest = TRUE
@@ -808,22 +781,12 @@ Analyze how the difference in FIRE ratio between paralog pairs relates to their
 sequence identity (gap-compressed identity from all-by-all alignments).
 
 ```{r pairwise-fire-diff}
-# Calculate pairwise FIRE difference for each paralog pair
-# Using the re_pairs table which has FIRE ratios for both query and target REs
+# Use pre-computed fire_diff and identity_bin from data loader
+# Filter for pairs with valid FIRE and identity data
 re_pairs_with_fire_diff <- re_pairs %>%
     filter(
-        !is.na(fire_ratio_ref_query),
-        !is.na(fire_ratio_ref_target)
-    ) %>%
-    mutate(
-        fire_diff = abs(fire_ratio_ref_query - fire_ratio_ref_target),
-        # Create identity bins
-        identity_bin = cut(
-            gap_compressed_identity,
-            breaks = c(0, 0.90, 0.95, 0.98, 0.99, 0.999, 1.0),
-            labels = c("<90%", "90-95%", "95-98%", "98-99%", "99-99.9%", ">99.9%"),
-            include.lowest = TRUE
-        )
+        !is.na(fire_diff),
+        !is.na(gap_compressed_identity)
     )
 
 cat("Paralog pairs with FIRE data:", nrow(re_pairs_with_fire_diff), "\n")

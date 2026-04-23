@@ -18,8 +18,9 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 This script loads and prepares the primary dataframes for the paralog chromatin accessibility analysis.
 
 **Output dataframes saved to RData:**
-- `re_table_filtered` - REs with cluster assignments and FIRE ratios (coverage filtered, groups with >=2 REs)
-- `re_pairs` - Paralog pairs with FIRE data for both REs
+- `re_table` - REs with cluster assignments, FIRE ratios, per-RE allelic diff, and group-level allelic stats
+- `re_pairs` - ALL pairwise RE combinations within groups, with alignment info and group-level paralog stats
+- `group_stats` - One row per group combining paralog stats (from re_pairs) and allelic stats (from re_table)
 
 ## Load Libraries
 
@@ -68,7 +69,7 @@ then calculate FIRE ratios and filter for sufficient coverage.
 
 ```{r load-re-table}
 # Load REs with cluster assignments and peak information
-re_table <- read_tsv(
+re_table_raw <- read_tsv(
     "results/pileup/peaks_with_clusters.bed.gz",
     col_types = cols(.default = col_guess())
 ) %>%
@@ -82,16 +83,16 @@ re_table <- read_tsv(
         fire_ratio_alt = if_else(coverage_alt == 0, NA_real_, fire_ratio_alt)
     )
 
-cat("Loaded", nrow(re_table), "REs\n")
-cat("Unique clusters:", n_distinct(re_table$cluster_id), "\n")
-cat("Samples:", paste(unique(re_table$sample), collapse = ", "), "\n")
+cat("Loaded", nrow(re_table_raw), "REs\n")
+cat("Unique clusters:", n_distinct(re_table_raw$cluster_id), "\n")
+cat("Samples:", paste(unique(re_table_raw$sample), collapse = ", "), "\n")
 
 # Filter for sufficient coverage
-re_table_coverage_filtered <- re_table %>%
+re_table_coverage_filtered <- re_table_raw %>%
     filter(coverage_ref >= min_coverage)
 
 cat("REs with coverage >=", min_coverage, ":", nrow(re_table_coverage_filtered), "\n")
-cat("REs filtered out:", nrow(re_table) - nrow(re_table_coverage_filtered), "\n")
+cat("REs filtered out:", nrow(re_table_raw) - nrow(re_table_coverage_filtered), "\n")
 
 # Filter to keep only groups (cluster, sample, haplotype) with at least 2 REs
 # This is essential for paralog analysis - we need at least 2 REs to compare
@@ -100,25 +101,43 @@ groups_with_multiple_res <- re_table_coverage_filtered %>%
     filter(n >= 2) %>%
     select(-n)
 
-re_table_filtered <- re_table_coverage_filtered %>%
-    semi_join(groups_with_multiple_res, by = c("cluster_id", "sample", "haplotype"))
+re_table <- re_table_coverage_filtered %>%
+    semi_join(groups_with_multiple_res, by = c("cluster_id", "sample", "haplotype")) %>%
+    # Calculate per-RE allelic difference (ref vs alt at this position)
+    mutate(
+        allelic_diff = abs(fire_ratio_ref - fire_ratio_alt),
+        has_allelic_data = !is.na(fire_ratio_ref) & !is.na(fire_ratio_alt) & coverage_alt >= min_coverage
+    ) %>%
+    # Add group-level allelic statistics using grouped mutate
+    group_by(cluster_id, sample, haplotype) %>%
+    mutate(
+        # Count of REs in this group
+        n_paralogs = n(),
+        # Allelic stats (only for REs with sufficient alt coverage)
+        n_res_allelic = sum(has_allelic_data, na.rm = TRUE),
+        group_mean_allelic_diff = mean(allelic_diff[has_allelic_data], na.rm = TRUE),
+        group_sd_allelic_diff = sd(allelic_diff[has_allelic_data], na.rm = TRUE),
+        group_cv_allelic_diff = group_sd_allelic_diff / group_mean_allelic_diff
+    ) %>%
+    ungroup()
 
-n_singleton_groups <- nrow(re_table_coverage_filtered) - nrow(re_table_filtered)
+n_singleton_groups <- nrow(re_table_coverage_filtered) - nrow(re_table)
 cat("REs in singleton groups removed:", n_singleton_groups, "\n")
-cat("REs after group filter:", nrow(re_table_filtered), "\n")
+cat("REs after group filter:", nrow(re_table), "\n")
+cat("REs with allelic data (sufficient alt coverage):", sum(re_table$has_allelic_data), "\n")
 
-glimpse(re_table_filtered)
+glimpse(re_table)
 ```
 
-## Load RE Pairwise Table (Paralogs)
+## Generate All Pairwise Paralog Combinations
 
-Load pairwise RE alignments from all-by-all analysis and filter for **paralog pairs** -
-pairs where both REs are in the same cluster, same sample, and same haplotype.
-Then join with RE table to add FIRE data and filter for pairs where both REs pass coverage thresholds.
+Generate ALL pairwise combinations of REs within the same (cluster, sample, haplotype) group.
+This ensures we have every possible paralog pair, not just those with alignments.
+Alignment info (like sequence identity) is joined when available.
 
-```{r load-re-pairs}
-# Load all pairwise RE alignments
-all_pairs <- read_tsv(
+```{r re-pairs}
+# Load alignment data for joining
+alignment_data <- read_tsv(
     "results/all_by_all/re_pairwise_identity.tsv.gz",
     col_types = cols(
         query_re_id = col_character(),
@@ -132,68 +151,155 @@ all_pairs <- read_tsv(
         target_haplotype = col_character(),
         .default = col_guess()
     )
-)
-
-cat("Total pairwise alignments:", nrow(all_pairs), "\n")
-
-# Filter for paralog pairs: same cluster, same sample, same haplotype
-re_pairs_raw <- all_pairs %>%
+) %>%
+    # Filter for paralog pairs: same cluster, same sample, same haplotype
     filter(
         same_cluster == TRUE,
         query_sample == target_sample,
         query_haplotype == target_haplotype
     ) %>%
-    rename(
-        cluster_id = query_cluster,
-        sample = query_sample,
-        haplotype = query_haplotype
-    ) %>%
-    select(-target_cluster, -target_sample, -target_haplotype, -same_cluster)
+    select(query_re_id, target_re_id, gap_compressed_identity, alignment_length, num_matches)
 
-cat("Paralog pairs (same cluster/sample/haplotype):", nrow(re_pairs_raw), "\n")
+cat("Alignment records loaded:", nrow(alignment_data), "\n")
 
-# Join RE metadata for both query and target REs
-re_cols_to_join <- c("re_id", "fire_ratio_ref", "fire_ratio_alt", "coverage_ref", "coverage_alt")
-
-re_pairs <- re_pairs_raw %>%
-    # Join query RE info
-    inner_join(
-        re_table_filtered %>% select(all_of(re_cols_to_join)),
-        by = c("query_re_id" = "re_id"),
-        suffix = c("", "_query")
-    ) %>%
-    rename(
-        fire_ratio_ref_query = fire_ratio_ref,
-        fire_ratio_alt_query = fire_ratio_alt,
-        coverage_ref_query = coverage_ref,
-        coverage_alt_query = coverage_alt
-    ) %>%
-    # Join target RE info
-    inner_join(
-        re_table_filtered %>% select(all_of(re_cols_to_join)),
-        by = c("target_re_id" = "re_id"),
-        suffix = c("", "_target")
-    ) %>%
-    rename(
-        fire_ratio_ref_target = fire_ratio_ref,
-        fire_ratio_alt_target = fire_ratio_alt,
-        coverage_ref_target = coverage_ref,
-        coverage_alt_target = coverage_alt
+# Create alignment lookup with both directions
+alignment_info <- alignment_data %>%
+    bind_rows(
+        alignment_data %>%
+            select(
+                query_re_id = target_re_id,
+                target_re_id = query_re_id,
+                gap_compressed_identity, alignment_length,
+                num_matches
+            )
     )
 
-# Report filtering stats
-n_before <- nrow(re_pairs_raw)
-n_after <- nrow(re_pairs)
-n_removed <- n_before - n_after
-pct_removed <- round(100 * n_removed / n_before, 1)
+# Generate ALL pairwise paralog combinations from re_table
+# This uses a self-join to create every possible pair
+re_pairs <- re_table %>%
+    select(cluster_id, sample, haplotype, re_id, fire_ratio_ref, fire_ratio_alt) %>%
+    rename(
+        query_re_id = re_id,
+        fire_ratio_ref_query = fire_ratio_ref,
+        fire_ratio_alt_query = fire_ratio_alt
+    ) %>%
+    inner_join(
+        re_table %>%
+            select(cluster_id, sample, haplotype,
+                target_re_id = re_id,
+                fire_ratio_ref_target = fire_ratio_ref,
+                fire_ratio_alt_target = fire_ratio_alt
+            ),
+        by = c("cluster_id", "sample", "haplotype"),
+        relationship = "many-to-many"
+    ) %>%
+    # Keep only pairs where query < target to avoid duplicates and self-pairs
+    filter(query_re_id < target_re_id) %>%
+    # Calculate per-pair metrics
+    mutate(
+        fire_diff = abs(fire_ratio_ref_query - fire_ratio_ref_target),
+        # Allelic differences for query and target REs
+        allelic_diff_query = abs(fire_ratio_ref_query - fire_ratio_alt_query),
+        allelic_diff_target = abs(fire_ratio_ref_target - fire_ratio_alt_target)
+    ) %>%
+    # Join alignment info when available
+    left_join(
+        alignment_info,
+        by = c("query_re_id", "target_re_id")
+    ) %>%
+    # Add identity bin (pre-computed for downstream analyses)
+    mutate(
+        identity_bin = cut(
+            gap_compressed_identity,
+            breaks = c(0, 0.90, 0.95, 0.98, 0.99, 0.999, 1.0),
+            labels = c("<90%", "90-95%", "95-98%", "98-99%", "99-99.9%", ">99.9%"),
+            include.lowest = TRUE
+        )
+    ) %>%
+    # Add group-level statistics using grouped mutate
+    group_by(cluster_id, sample, haplotype) %>%
+    mutate(
+        # Number of pairs in this group (n_paralogs = pairs + 1 for groups with >=2 REs)
+        n_pairs = n(),
+        # Note: n_paralogs (actual RE count) requires counting unique REs
+        n_paralogs = n_distinct(c(query_re_id, target_re_id)),
+        # Group-level FIRE difference stats
+        group_mean_fire_diff = mean(fire_diff, na.rm = TRUE),
+        group_sd_fire_diff = sd(fire_diff, na.rm = TRUE),
+        group_median_fire_diff = median(fire_diff, na.rm = TRUE),
+        group_min_fire_diff = min(fire_diff, na.rm = TRUE),
+        group_max_fire_diff = max(fire_diff, na.rm = TRUE),
+        group_range_fire_diff = group_max_fire_diff - group_min_fire_diff,
+        # Group-level identity stats (from alignments)
+        group_mean_identity = mean(gap_compressed_identity, na.rm = TRUE),
+        group_median_identity = median(gap_compressed_identity, na.rm = TRUE),
+        group_min_identity = min(gap_compressed_identity, na.rm = TRUE),
+        group_max_identity = max(gap_compressed_identity, na.rm = TRUE),
+        # Group-level allelic difference stats
+        group_mean_allelic_diff = mean(c(allelic_diff_query, allelic_diff_target), na.rm = TRUE),
+        group_sd_allelic_diff = sd(c(allelic_diff_query, allelic_diff_target), na.rm = TRUE)
+    ) %>%
+    ungroup()
 
-cat("\n=== Filtering pairs for coverage ===\n")
-cat("Pairs before filtering:", n_before, "\n")
-cat("Pairs after filtering:", n_after, "\n")
-cat("Pairs removed:", n_removed, "(", pct_removed, "%)\n")
-cat("Clusters with paralogs:", n_distinct(re_pairs$cluster_id), "\n")
+cat("\n=== Paralog Pairs (all pairwise combinations) ===\n")
+cat("Total pairs:", nrow(re_pairs), "\n")
+cat("Pairs with alignment data:", sum(!is.na(re_pairs$gap_compressed_identity)), "\n")
+cat("Pairs without alignment:", sum(is.na(re_pairs$gap_compressed_identity)), "\n")
+cat("Unique groups:", n_distinct(re_pairs$cluster_id, re_pairs$sample, re_pairs$haplotype), "\n")
+
+cat("\n=== Pre-computed columns added ===\n")
+cat("Per-pair: fire_diff, allelic_diff_query, allelic_diff_target, identity_bin\n")
+cat("Per-group: n_pairs, n_paralogs, group_mean/sd/median/min/max_fire_diff,\n")
+cat("           group_mean/median/min/max_identity, group_mean/sd_allelic_diff\n")
 
 glimpse(re_pairs)
+```
+
+## Create Group Statistics Table
+
+Extract one row per group with summary statistics for downstream analyses.
+Combines paralog stats from `re_pairs` with allelic stats from `re_table`.
+
+```{r group-stats}
+# Extract unique allelic group statistics from re_table (one row per group)
+allelic_stats <- re_table %>%
+    distinct(
+        cluster_id, sample, haplotype,
+        n_paralogs, n_res_allelic,
+        group_mean_allelic_diff, group_sd_allelic_diff, group_cv_allelic_diff
+    ) %>%
+    # Rename for clarity in group_stats
+    rename(
+        mean_allelic_diff = group_mean_allelic_diff,
+        sd_allelic_diff = group_sd_allelic_diff,
+        cv_allelic_diff = group_cv_allelic_diff
+    )
+
+# Extract unique paralog group statistics from re_pairs (one row per group)
+paralog_stats <- re_pairs %>%
+    distinct(
+        cluster_id, sample, haplotype,
+        n_pairs,
+        group_mean_fire_diff, group_sd_fire_diff, group_median_fire_diff,
+        group_min_fire_diff, group_max_fire_diff, group_range_fire_diff,
+        group_mean_identity, group_median_identity, group_min_identity, group_max_identity
+    )
+
+# Combine paralog and allelic statistics
+group_stats <- paralog_stats %>%
+    left_join(allelic_stats, by = c("cluster_id", "sample", "haplotype")) %>%
+    # Add CV for paralog (SD / mean pairwise diff)
+    mutate(
+        cv_fire_diff = group_sd_fire_diff / group_mean_fire_diff
+    ) %>%
+    filter(!is.na(group_sd_fire_diff), !is.na(group_mean_fire_diff))
+
+cat("\n=== Group Statistics ===\n")
+cat("Total groups:", nrow(group_stats), "\n")
+cat("Groups with identity data:", sum(!is.na(group_stats$group_median_identity)), "\n")
+cat("Groups with allelic data:", sum(!is.na(group_stats$mean_allelic_diff)), "\n")
+
+glimpse(group_stats)
 ```
 
 ## Save Data
@@ -202,8 +308,9 @@ Save the primary dataframes to RData for use in subsequent analyses.
 
 ```{r save-data}
 save(
-    re_table_filtered,
+    re_table,
     re_pairs,
+    group_stats,
     min_coverage,
     COLOR_PARALOG,
     COLOR_ALLELIC,
@@ -213,8 +320,9 @@ save(
 
 cat("\n=== Data saved to", glue("{DATA_DIR}/paralog_data.RData"), "===\n")
 cat("Objects saved:\n")
-cat("  - re_table_filtered:", nrow(re_table_filtered), "rows\n")
+cat("  - re_table:", nrow(re_table), "rows\n")
 cat("  - re_pairs:", nrow(re_pairs), "rows\n")
+cat("  - group_stats:", nrow(group_stats), "rows\n")
 cat("  - min_coverage:", min_coverage, "\n")
 cat("  - COLOR_PARALOG, COLOR_ALLELIC, FIGURE_DIR\n")
 ```
@@ -223,9 +331,40 @@ cat("  - COLOR_PARALOG, COLOR_ALLELIC, FIGURE_DIR\n")
 
 ```{r summary}
 cat("=== Data Loading Summary ===\n\n")
-cat("REs loaded:", nrow(re_table_filtered), "(after coverage + group filter)\n")
-cat("Paralog pairs:", nrow(re_pairs), "\n")
-cat("Unique clusters:", n_distinct(re_table_filtered$cluster_id), "\n")
+cat("REs loaded:", nrow(re_table), "(after coverage + group filter)\n")
+cat("Paralog pairs (all pairwise):", nrow(re_pairs), "\n")
+cat("  - with alignment:", sum(!is.na(re_pairs$gap_compressed_identity)), "\n")
+cat("  - without alignment:", sum(is.na(re_pairs$gap_compressed_identity)), "\n")
+cat("Unique clusters:", n_distinct(re_table$cluster_id), "\n")
+cat("Unique groups (cluster/sample/haplotype):", n_distinct(re_pairs$cluster_id, re_pairs$sample, re_pairs$haplotype), "\n")
+
+cat("\n=== Pre-computed Statistics in re_table ===\n")
+cat("Per-RE metrics:\n")
+cat("  - allelic_diff: |fire_ratio_ref - fire_ratio_alt| at this RE\n")
+cat("  - has_allelic_data: TRUE if sufficient alt coverage\n")
+cat("Group-level metrics (same value for all REs in group):\n")
+cat("  - n_paralogs: count of REs in group\n")
+cat("  - n_res_allelic: count of REs with sufficient alt coverage\n")
+cat("  - group_mean/sd/cv_allelic_diff: allelic difference stats\n")
+
+cat("\n=== Pre-computed Statistics in re_pairs ===\n")
+cat("Per-pair metrics:\n")
+cat("  - fire_diff: absolute difference in FIRE ratio between paralogs\n")
+cat("  - allelic_diff_query/target: ref vs alt FIRE difference for each RE\n")
+cat("  - identity_bin: binned gap_compressed_identity\n")
+cat("Group-level metrics (same value for all pairs in group):\n")
+cat("  - n_pairs, n_paralogs: count of pairs and unique REs in group\n")
+cat("  - group_mean/sd/median/min/max_fire_diff: FIRE difference stats\n")
+cat("  - group_mean/median/min/max_identity: sequence identity stats\n")
+
+cat("\n=== Pre-computed Statistics in group_stats ===\n")
+cat("Paralog metrics (from re_pairs):\n")
+cat("  - n_pairs, n_paralogs, cv_fire_diff\n")
+cat("  - group_mean/sd/median/min/max/range_fire_diff\n")
+cat("  - group_mean/median/min/max_identity\n")
+cat("Allelic metrics (from re_table):\n")
+cat("  - n_res_allelic: count of REs with sufficient alt coverage\n")
+cat("  - mean_allelic_diff, sd_allelic_diff, cv_allelic_diff\n")
 ```
 
 ## Session Info

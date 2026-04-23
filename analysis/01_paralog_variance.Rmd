@@ -40,30 +40,24 @@ theme_set(mrv_grid())
 load("data/paralog_data.RData")
 
 cat("Loaded data:\n")
-cat("  - re_table_filtered:", nrow(re_table_filtered), "REs\n")
+cat("  - re_table:", nrow(re_table), "REs\n")
 cat("  - re_pairs:", nrow(re_pairs), "paralog pairs\n")
+cat("  - group_stats:", nrow(group_stats), "groups\n")
 ```
 
-## Identify Paralog Groups
+## Group Statistics Overview
 
-Count paralogs per cluster/sample/haplotype group.
+The data loader provides `group_stats` with one row per group and pre-computed statistics.
 
-```{r paralog-groups}
-# Count paralogs per cluster/sample/haplotype
-paralog_groups <- re_table_filtered %>%
-    group_by(cluster_id, sample, haplotype) %>%
-    summarise(
-        n_paralogs = n(),
-        .groups = "drop"
-    ) %>%
-    filter(n_paralogs >= 2)
+```{r group-stats-overview}
+glimpse(group_stats)
 
 # Distribution of paralog counts
-paralog_groups %>%
+group_stats %>%
     count(n_paralogs) %>%
     ggplot(aes(x = n_paralogs, y = n)) +
     geom_col() +
-    scale_x_continuous(breaks = seq(1, max(paralog_groups$n_paralogs), by = 1)) +
+    scale_x_continuous(breaks = seq(1, max(group_stats$n_paralogs), by = 1)) +
     labs(
         x = "Paralogs per group",
         y = "Count",
@@ -71,50 +65,8 @@ paralog_groups %>%
     )
 mrv_ggsave(glue("{FIGURE_DIR}/paralog_group_sizes.pdf"), width = 3, height = 2)
 
-cat("Paralog groups (>=2 paralogs):", nrow(paralog_groups), "\n")
-cat("Total paralogs in these groups:", sum(paralog_groups$n_paralogs), "\n")
-```
-
-## Calculate Within-Group Variance
-
-For each paralog group, calculate the variance and range of FIRE ratios.
-
-```{r within-group-variance}
-# Join back to get the actual RE data for paralog groups
-paralogs <- re_table_filtered %>%
-    inner_join(paralog_groups, by = c("cluster_id", "sample", "haplotype"))
-
-# Helper function to calculate mean of all pairwise absolute differences
-mean_pairwise_diff <- function(x) {
-    x <- x[!is.na(x)]
-    if (length(x) < 2) {
-        return(NA_real_)
-    }
-    # Get all pairwise combinations and compute mean absolute difference
-    diffs <- combn(x, 2, function(pair) abs(pair[1] - pair[2]))
-    mean(diffs)
-}
-
-# Calculate variance statistics per group
-group_stats <- paralogs %>%
-    group_by(cluster_id, sample, haplotype) %>%
-    summarise(
-        n_paralogs = n(),
-        mean_fire_ratio = mean(fire_ratio_ref, na.rm = TRUE),
-        sd_fire_ratio = sd(fire_ratio_ref, na.rm = TRUE),
-        var_fire_ratio = var(fire_ratio_ref, na.rm = TRUE),
-        min_fire_ratio = min(fire_ratio_ref, na.rm = TRUE),
-        max_fire_ratio = max(fire_ratio_ref, na.rm = TRUE),
-        range_fire_ratio = max_fire_ratio - min_fire_ratio,
-        mean_fire_ratio_diff = mean_pairwise_diff(fire_ratio_ref), # mean of pairwise |diff|
-        cv_fire_ratio = sd_fire_ratio / mean_fire_ratio_diff, # CV: SD / mean pairwise diff
-        mean_coverage = mean(coverage_ref, na.rm = TRUE),
-        .groups = "drop"
-    ) %>%
-    filter(!is.na(sd_fire_ratio), !is.na(mean_fire_ratio_diff))
-
-cat("Groups with variance stats:", nrow(group_stats), "\n")
-glimpse(group_stats)
+cat("Paralog groups:", nrow(group_stats), "\n")
+cat("Total paralogs in these groups:", sum(group_stats$n_paralogs), "\n")
 ```
 
 ## Variance Distribution
@@ -122,7 +74,7 @@ glimpse(group_stats)
 ```{r variance-sd-distribution}
 # Distribution of standard deviation within paralog groups
 group_stats %>%
-    ggplot(aes(x = sd_fire_ratio)) +
+    ggplot(aes(x = group_sd_fire_diff)) +
     geom_histogram(bins = 50, fill = COLOR_PARALOG, alpha = 0.7) +
     labs(
         x = "SD of FIRE ratio",
@@ -135,7 +87,7 @@ mrv_ggsave(glue("{FIGURE_DIR}/fire_ratio_sd_distribution.pdf"), width = 3, heigh
 ```{r variance-range-distribution}
 # Distribution of range
 group_stats %>%
-    ggplot(aes(x = range_fire_ratio)) +
+    ggplot(aes(x = group_range_fire_diff)) +
     geom_histogram(bins = 50, fill = COLOR_PARALOG, alpha = 0.7) +
     labs(
         x = "Range of FIRE ratio",
@@ -151,7 +103,7 @@ Does variance increase with number of paralogs?
 
 ```{r variance-by-size}
 group_stats %>%
-    ggplot(aes(x = factor(n_paralogs), y = sd_fire_ratio)) +
+    ggplot(aes(x = factor(n_paralogs), y = group_sd_fire_diff)) +
     geom_boxplot(fill = "steelblue", alpha = 0.5) +
     geom_jitter(alpha = 0.3, width = 0.2, size = 0.5) +
     labs(
@@ -169,8 +121,8 @@ useful for comparing groups with different baseline accessibility.
 
 ```{r cv-distribution}
 group_stats %>%
-    filter(is.finite(cv_fire_ratio), cv_fire_ratio < 5) %>% # Remove extreme values
-    ggplot(aes(x = cv_fire_ratio)) +
+    filter(is.finite(cv_fire_diff), cv_fire_diff < 5) %>% # Remove extreme values
+    ggplot(aes(x = cv_fire_diff)) +
     geom_histogram(bins = 50, fill = "purple", alpha = 0.7) +
     labs(
         x = "CV (SD/mean)",
@@ -186,13 +138,13 @@ Identify paralog groups with unusually high or low variance.
 
 ```{r high-low-variance-categorize}
 # Categorize groups by variance
-median_sd <- median(group_stats$sd_fire_ratio, na.rm = TRUE)
+median_sd <- median(group_stats$group_sd_fire_diff, na.rm = TRUE)
 
 group_stats <- group_stats %>%
     mutate(
         variance_category = case_when(
-            sd_fire_ratio < median_sd / 2 ~ "Low variance",
-            sd_fire_ratio > median_sd * 2 ~ "High variance",
+            group_sd_fire_diff < median_sd / 2 ~ "Low variance",
+            group_sd_fire_diff > median_sd * 2 ~ "High variance",
             TRUE ~ "Moderate variance"
         )
     )
@@ -219,8 +171,8 @@ group_stats %>%
     summarise(
         n_groups = n(),
         mean_n_paralogs = mean(n_paralogs),
-        mean_fire_ratio = mean(mean_fire_ratio, na.rm = TRUE),
-        mean_coverage = mean(mean_coverage, na.rm = TRUE),
+        mean_fire_diff = mean(group_mean_fire_diff, na.rm = TRUE),
+        mean_identity = mean(group_median_identity, na.rm = TRUE),
         .groups = "drop"
     ) %>%
     knitr::kable(digits = 3)
@@ -232,15 +184,15 @@ group_stats %>%
 # Top high-variance groups
 high_var_groups <- group_stats %>%
     filter(variance_category == "High variance") %>%
-    arrange(desc(sd_fire_ratio)) %>%
+    arrange(desc(group_sd_fire_diff)) %>%
     head(10)
 
 high_var_groups %>%
-    select(cluster_id, sample, haplotype, n_paralogs, mean_fire_ratio, sd_fire_ratio, range_fire_ratio) %>%
+    select(cluster_id, sample, haplotype, n_paralogs, group_sd_fire_diff, group_range_fire_diff) %>%
     knitr::kable(digits = 3, caption = "Top 10 high variance paralog groups")
 
 # Get individual RE data for these groups
-high_var_paralogs <- paralogs %>%
+high_var_res <- re_table %>%
     inner_join(
         high_var_groups %>% select(cluster_id, sample, haplotype),
         by = c("cluster_id", "sample", "haplotype")
@@ -248,8 +200,8 @@ high_var_paralogs <- paralogs %>%
 ```
 
 ```{r high-variance-plot}
-# Plot individual paralogs in high variance groups
-high_var_paralogs %>%
+# Plot individual REs in high variance groups
+high_var_res %>%
     ggplot(aes(x = cluster_id, y = fire_ratio_ref, color = sample)) +
     geom_jitter(width = 0.2, size = 1, alpha = 0.7) +
     coord_flip() +
@@ -269,48 +221,43 @@ mrv_ggsave(glue("{FIGURE_DIR}/high_variance_examples.pdf"), width = 3, height = 
 # Top low-variance groups (most consistent)
 low_var_groups <- group_stats %>%
     filter(variance_category == "Low variance", n_paralogs >= 3) %>%
-    arrange(sd_fire_ratio) %>%
+    arrange(group_sd_fire_diff) %>%
     head(10)
 
 low_var_groups %>%
-    select(cluster_id, sample, haplotype, n_paralogs, mean_fire_ratio, sd_fire_ratio, range_fire_ratio) %>%
-    knitr::kable(digits = 3, caption = "Top 10 low variance paralog groups (>=3 paralogs)")
+    select(cluster_id, sample, haplotype, n_paralogs, group_sd_fire_diff, group_range_fire_diff) %>%
+    knitr::kable(digits = 3, caption = "Top 10 low variance paralog groups (>=3 REs)")
 ```
 
 ## Random Cluster Examples
 
-Violin plots showing FIRE ratio distribution for randomly selected clusters with sufficient paralogs.
+Violin plots showing FIRE ratio distribution for randomly selected clusters with sufficient REs.
 
 ```{r random-cluster-violins}
 set.seed(42)
 
-# Select random clusters with at least 4 paralogs for better visualization
+# Select random clusters with at least 4 REs for better visualization
 random_clusters <- group_stats %>%
     filter(n_paralogs >= 4) %>%
     slice_sample(n = 10) %>%
     select(cluster_id, sample, haplotype)
 
 # Get individual RE data for these clusters
-random_cluster_paralogs <- paralogs %>%
+random_cluster_res <- re_table %>%
     inner_join(random_clusters, by = c("cluster_id", "sample", "haplotype")) %>%
     mutate(
         cluster_label = glue("{cluster_id}\n({sample}, {haplotype})")
     )
 
-# Show cluster info
-random_cluster_paralogs %>%
-    group_by(cluster_id, sample, haplotype) %>%
-    summarise(
-        n_paralogs = n(),
-        mean_fire_ratio = mean(fire_ratio_ref, na.rm = TRUE),
-        sd_fire_ratio = sd(fire_ratio_ref, na.rm = TRUE),
-        .groups = "drop"
-    ) %>%
+# Show cluster info (use pre-computed stats from group_stats)
+group_stats %>%
+    inner_join(random_clusters, by = c("cluster_id", "sample", "haplotype")) %>%
+    select(cluster_id, sample, haplotype, n_paralogs, group_mean_fire_diff, group_sd_fire_diff) %>%
     knitr::kable(digits = 3, caption = "Random cluster summary")
 
 
 # Violin plot with points, colored by implicit vs annotated peaks
-random_cluster_paralogs %>%
+random_cluster_res %>%
     mutate(is_implicit = str_starts(re_id, "IMPLICIT_")) %>%
     ggplot(aes(x = cluster_label, y = fire_ratio_ref)) +
     geom_violin(alpha = 0.3, scale = "width", fill = "gray") +
@@ -340,10 +287,10 @@ cat("Total paralog groups analyzed:", nrow(group_stats), "\n")
 cat("Total paralogs in analysis:", sum(group_stats$n_paralogs), "\n\n")
 
 cat("FIRE ratio variance (SD) across paralog groups:\n")
-summary(group_stats$sd_fire_ratio)
+summary(group_stats$group_sd_fire_diff)
 
 cat("\nFIRE ratio range across paralog groups:\n")
-summary(group_stats$range_fire_ratio)
+summary(group_stats$group_range_fire_diff)
 
 cat(
     "\nProportion of groups with high variance (>2x median):",

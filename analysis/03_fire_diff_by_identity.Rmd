@@ -1,5 +1,5 @@
 ---
-title: "Paralog FIRE Difference Stratified by Sequence Identity"
+title: "Paralog Actuation Difference Stratified by Sequence Identity"
 author: "PARE Pipeline"
 date: "`r Sys.Date()`"
 output:
@@ -15,7 +15,7 @@ knitr::opts_chunk$set(echo = TRUE, warning = FALSE, message = FALSE)
 
 ## Overview
 
-Analyze how the difference in FIRE ratio between paralog pairs relates to their
+Analyze how the difference in actuation (percent FIRE) between paralog pairs relates to their
 sequence identity (gap-compressed identity from all-by-all alignments).
 
 ## Load Data
@@ -39,28 +39,19 @@ theme_set(mrv_grid())
 load("data/paralog_data.RData")
 
 cat("Loaded data:\n")
-cat("  - re_pairs:", nrow(re_pairs), "paralog pairs\n")
+cat("  - re_table:", nrow(re_table), "REs\n")
+cat("  - re_pairs:", nrow(re_pairs), "paralog pairs (all pairwise combinations)\n")
 ```
 
 ## Calculate Pairwise FIRE Difference
 
 ```{r pairwise-fire-diff}
-# Calculate pairwise FIRE difference for each paralog pair
-# Using the re_pairs table which has FIRE ratios for both query and target REs
+# Use pre-computed fire_diff and identity_bin from data loader
+# Filter for pairs with valid FIRE and identity data
 re_pairs_with_fire_diff <- re_pairs %>%
     filter(
-        !is.na(fire_ratio_ref_query),
-        !is.na(fire_ratio_ref_target)
-    ) %>%
-    mutate(
-        fire_diff = abs(fire_ratio_ref_query - fire_ratio_ref_target),
-        # Create identity bins
-        identity_bin = cut(
-            gap_compressed_identity,
-            breaks = c(0, 0.90, 0.95, 0.98, 0.99, 0.999, 1.0),
-            labels = c("<90%", "90-95%", "95-98%", "98-99%", "99-99.9%", ">99.9%"),
-            include.lowest = TRUE
-        )
+        !is.na(fire_diff),
+        !is.na(gap_compressed_identity)
     )
 
 cat("Paralog pairs with FIRE data:", nrow(re_pairs_with_fire_diff), "\n")
@@ -101,12 +92,12 @@ re_pairs_with_fire_diff %>%
     scale_y_continuous(expand = expansion(mult = c(0.05, 0.18))) +
     labs(
         x = "Gap-compressed sequence identity",
-        y = "|FIRE ratio difference|",
-        title = "Paralog FIRE divergence by sequence identity",
+        y = "Percent actuation difference between paralogs",
+        title = "Paralog actuation divergence by sequence identity",
         caption = "n = pairs, c = clusters, med = median |diff|"
     ) +
     theme(legend.position = "none")
-mrv_ggsave(glue("{FIGURE_DIR}/fire_diff_by_identity_violin.pdf"), width = 4, height = 3.5)
+mrv_ggsave(glue("{FIGURE_DIR}/fire_diff_by_identity_violin.pdf"), width = 4, height = 3)
 ```
 
 ## FIRE Difference vs Identity - Hexbin Plot
@@ -134,12 +125,12 @@ re_pairs_with_fire_diff %>%
     stat_regline_equation(label.x.npc = "left", label.y.npc = 0.85, size = 3) +
     labs(
         x = "Gap-compressed sequence identity (log10 divergence scale)",
-        y = "|FIRE ratio difference|",
-        title = "Paralog FIRE divergence vs sequence identity"
+        y = "Percent actuation difference between paralogs",
+        title = "Paralog actuation divergence vs sequence identity"
     ) +
     mrv_grid() +
     theme(legend.position = "right")
-mrv_ggsave(glue("{FIGURE_DIR}/fire_diff_vs_identity_hexbin.pdf"), width = 5, height = 3)
+mrv_ggsave(glue("{FIGURE_DIR}/fire_diff_vs_identity_hexbin.pdf"), width = 3, height = 2)
 ```
 
 ## Summary Statistics by Identity Bin
@@ -162,10 +153,10 @@ fire_stats_by_identity <- re_pairs_with_fire_diff %>%
 fire_stats_by_identity %>%
     knitr::kable(
         digits = 3,
-        caption = "FIRE ratio difference statistics by sequence identity bin",
+        caption = "Actuation difference statistics by sequence identity bin",
         col.names = c(
             "Identity", "N pairs", "Mean |diff|", "Median |diff|",
-            "SD |diff|", "% diff > 0.1", "% diff > 0.2"
+            "SD |diff|", "% diff > 10%", "% diff > 20%"
         )
     )
 ```
@@ -180,7 +171,7 @@ cor_test <- cor.test(
     method = "spearman"
 )
 
-cat("\n=== Correlation: Sequence Identity vs FIRE Difference ===\n")
+cat("\n=== Correlation: Sequence Identity vs Actuation Difference ===\n")
 cat("Spearman correlation:", round(cor_test$estimate, 4), "\n")
 cat("p-value:", format(cor_test$p.value, scientific = TRUE, digits = 3), "\n")
 ```
@@ -194,11 +185,11 @@ high_identity_pairs <- re_pairs_with_fire_diff %>%
 
 cat("\n=== High Identity Pairs (>=98% identity) ===\n")
 cat("Total pairs:", nrow(high_identity_pairs), "\n")
-cat("Mean FIRE diff:", round(mean(high_identity_pairs$fire_diff, na.rm = TRUE), 3), "\n")
-cat("Median FIRE diff:", round(median(high_identity_pairs$fire_diff, na.rm = TRUE), 3), "\n")
-cat("% with FIRE diff < 0.05:", round(mean(high_identity_pairs$fire_diff < 0.05, na.rm = TRUE) * 100, 1), "%\n")
-cat("% with FIRE diff < 0.10:", round(mean(high_identity_pairs$fire_diff < 0.10, na.rm = TRUE) * 100, 1), "%\n")
-cat("% with FIRE diff > 0.20:", round(mean(high_identity_pairs$fire_diff > 0.20, na.rm = TRUE) * 100, 1), "%\n")
+cat("Mean actuation diff:", round(mean(high_identity_pairs$fire_diff, na.rm = TRUE), 3), "\n")
+cat("Median actuation diff:", round(median(high_identity_pairs$fire_diff, na.rm = TRUE), 3), "\n")
+cat("% with diff < 5%:", round(mean(high_identity_pairs$fire_diff < 0.05, na.rm = TRUE) * 100, 1), "%\n")
+cat("% with diff < 10%:", round(mean(high_identity_pairs$fire_diff < 0.10, na.rm = TRUE) * 100, 1), "%\n")
+cat("% with diff > 20%:", round(mean(high_identity_pairs$fire_diff > 0.20, na.rm = TRUE) * 100, 1), "%\n")
 ```
 
 ## Density Plot by Identity Bin
@@ -212,12 +203,103 @@ re_pairs_with_fire_diff %>%
     facet_wrap(~identity_bin, ncol = 1, scales = "free_y") +
     scale_fill_viridis_d(option = "plasma", direction = -1) +
     labs(
-        x = "|FIRE ratio difference|",
+        x = "Percent actuation difference between paralogs",
         y = "Density",
-        title = "Distribution of FIRE differences by identity"
+        title = "Distribution of actuation differences by identity"
     ) +
     theme(legend.position = "none")
-mrv_ggsave(glue("{FIGURE_DIR}/fire_diff_density_by_identity.pdf"), width = 4, height = 5)
+mrv_ggsave(glue("{FIGURE_DIR}/fire_diff_density_by_identity.pdf"), width = 3, height = 3)
+```
+
+## Random Cluster Examples
+
+Show individual paralog and allelic differences for randomly selected clusters.
+
+```{r random-cluster-examples}
+set.seed(42)
+
+# Use re_pairs from data loader (all pairwise combinations)
+# Filter for valid paralog differences
+paralog_pairs_valid <- re_pairs %>%
+    filter(!is.na(fire_diff))
+
+# Select random groups with sufficient paralogs (>=3 REs means >=3 pairs)
+random_groups <- paralog_pairs_valid %>%
+    group_by(cluster_id, sample, haplotype) %>%
+    summarise(n_pairs = n(), .groups = "drop") %>%
+    filter(n_pairs >= 3) %>%
+    slice_sample(n = 5)
+
+# Get paralog differences for these groups
+paralog_diffs <- paralog_pairs_valid %>%
+    inner_join(random_groups %>% select(cluster_id, sample, haplotype),
+        by = c("cluster_id", "sample", "haplotype")
+    ) %>%
+    transmute(
+        cluster_id, sample, haplotype,
+        pair_id = paste(query_re_id, target_re_id, sep = "_vs_"),
+        fire_diff = fire_diff,
+        diff_type = "Paralog"
+    )
+
+# Get allelic differences for unique REs in these groups
+# Use pre-computed allelic_diff from re_table (already has abs())
+allelic_diffs <- re_table %>%
+    inner_join(random_groups %>% select(cluster_id, sample, haplotype),
+        by = c("cluster_id", "sample", "haplotype")
+    ) %>%
+    filter(has_allelic_data) %>%
+    transmute(
+        cluster_id, sample, haplotype,
+        pair_id = re_id,
+        fire_diff = allelic_diff,
+        diff_type = "Allelic"
+    )
+
+# Create labels and combine
+paralog_diffs <- paralog_diffs %>%
+    mutate(group_label = glue("{cluster_id}\n({sample}, {haplotype})"))
+allelic_diffs <- allelic_diffs %>%
+    mutate(group_label = glue("{cluster_id}\n({sample}, {haplotype})"))
+
+combined_diffs <- bind_rows(paralog_diffs, allelic_diffs) %>%
+    mutate(diff_type = factor(diff_type, levels = c("Paralog", "Allelic")))
+
+# Summary table - show counts to verify pairwise vs per-RE
+combined_diffs %>%
+    group_by(group_label, diff_type) %>%
+    summarise(
+        n = n(),
+        mean_diff = mean(fire_diff, na.rm = TRUE),
+        median_diff = median(fire_diff, na.rm = TRUE),
+        .groups = "drop"
+    ) %>%
+    pivot_wider(
+        names_from = diff_type,
+        values_from = c(n, mean_diff, median_diff)
+    ) %>%
+    knitr::kable(digits = 3, caption = "Random group summary (Paralog n = pairwise pairs, Allelic n = REs)")
+```
+
+```{r random-cluster-plot}
+# Plot individual differences faceted by group
+combined_diffs %>%
+    ggplot(aes(x = diff_type, y = fire_diff, fill = diff_type)) +
+    geom_violin(alpha = 0.5, scale = "width") +
+    geom_jitter(width = 0.15, size = 1, alpha = 0.7) +
+    facet_wrap(~group_label, nrow = 1) +
+    scale_fill_manual(values = c("Paralog" = COLOR_PARALOG, "Allelic" = COLOR_ALLELIC)) +
+    labs(
+        x = "",
+        y = "Actuation difference",
+        title = "Paralog vs Allelic differences in random groups"
+    ) +
+    theme(
+        legend.position = "none",
+        axis.text.x = element_text(angle = 45, hjust = 1),
+        strip.text = element_text(size = 5)
+    )
+mrv_ggsave(glue("{FIGURE_DIR}/random_cluster_paralog_allelic.pdf"), width = 5, height = 3)
 ```
 
 ## Session Info
