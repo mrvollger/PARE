@@ -1,207 +1,194 @@
-import pandas as pd
+"""
+Shared configuration, helpers, and sample discovery for PARE.
+
+PARE now consumes a single augmented union peaks BED (bgzipped TSV) produced
+upstream by `add_slop_to_union_bed.py`. The BED provides:
+  - consensus_peak_id  (cross-sample consensus ID)
+  - sample_id          (composite, e.g. HG002_PS01015_PacBio_HG002_2)
+  - Individual_ID, Haplotype
+  - asm_chr, asm_start, asm_end, asm_slop_start, asm_slop_end
+  - slop_seq           (±slop flanking sequence, pre-extracted from each assembly)
+  - is_peak, is_primary_sample, is_SD_*
+
+No per-sample assembly FASTAs are required.
+
+Alignment is performed once per haplotype_sample = (Individual_ID, Haplotype),
+using only is_primary_sample == TRUE rows. Non-primary rows share the same
+underlying sequence and are kept only as graph nodes (not alignment inputs).
+
+RE_ID format: {sample_id}__{consensus_peak_id}   (see scripts/union_bed.py)
+"""
+
+import csv
+import gzip
+import sys
 from pathlib import Path
 
 
-# Load configuration
 configfile: "config/config.yaml"
 
 
-# Set default configuration values if not specified in config file
+# --- defaults -----------------------------------------------------------------
+
 config.setdefault("output_dir", "results")
 config.setdefault("temp_dir", "temp")
 
-# Alignment defaults
+# Alignment
 config.setdefault("alignment", {})
 config["alignment"].setdefault("min_identity", 80)
 config["alignment"].setdefault("min_coverage", 80)
-config["alignment"].setdefault("tool", "minimap2")
 config["alignment"].setdefault("threads", 8)
-config["alignment"].setdefault("minimap_preset", "asm20")
-config["alignment"].setdefault("max_secondary", 100)
-config["alignment"].setdefault("secondary_threshold", 0.8)
 config["alignment"].setdefault("kmer_size", 15)
 config["alignment"].setdefault("window_size", 10)
 
-# Clustering defaults
+# Clustering
 config.setdefault("clustering", {})
-config["clustering"].setdefault("allelic_distance", 10000)
 config["clustering"].setdefault("reciprocal_overlap", 0.5)
-config["clustering"].setdefault("method", "graph")
 
-# Filtering defaults
+# Filtering
 config.setdefault("filtering", {})
-
-# Pileup defaults
-config.setdefault("pileup", {})
 config["filtering"].setdefault("min_re_length", 50)
 config["filtering"].setdefault("max_re_length", 10000)
-config["filtering"].setdefault("skip_repeats", False)
-config["filtering"].setdefault("slop", 2000)
-# sd_bed: Optional path to segmental duplication BED file for filtering
-# If provided, REs overlapping SDs will be excluded
+config["filtering"].setdefault("drop_sd", False)
+
+# Pileup (optional: requires a separate ft_bam table)
+config.setdefault("pileup", {})
+
+# Required
+if "union_bed" not in config:
+    raise ValueError(
+        "config is missing required key 'union_bed' (path to the augmented union peaks BED)"
+    )
 
 
-# Helper function for memory allocation with retries
+# --- helpers ------------------------------------------------------------------
+
+OUTPUT = config["output_dir"]
+TEMP = config["temp_dir"]
+
+
+def output_path(*args):
+    return str(Path(OUTPUT) / Path(*args))
+
+
+def temp_path(*args):
+    return str(Path(TEMP) / Path(*args))
+
+
 def get_mem_mb(wildcards, attempt):
     if attempt < 3:
         return attempt * 1024 * 8
     return attempt * 1024 * 16
 
 
-# Load sample table
-def load_sample_table():
-    """Load and validate the sample table"""
-    sample_file = config["sample_table"]
-    df = pd.read_csv(sample_file, sep="\t")
+# --- load union BED once at workflow-parse time ------------------------------
 
-    required_cols = ["sample", "haplotype", "assembly", "re_bed"]
-    for col in required_cols:
-        if col not in df.columns:
-            raise ValueError(f"Sample table missing required column: {col}")
+_UNION_BED = config["union_bed"]
 
-    # Create a unique identifier for each sample-haplotype combination
-    df["sample_id"] = df["sample"] + "_" + df["haplotype"]
+# A small sidecar TSV listing the samples in the union BED. Required so that
+# we don't have to stream the (potentially multi-GB) union BED at workflow-
+# parse time just to discover sample_ids.
+#
+# Columns (tab-separated, header required):
+#   sample_id              e.g. HG002_PS01015_PacBio_HG002_2
+#   Individual_ID          e.g. HG002
+#   Haplotype              1 or 2
+#   is_primary_sample      TRUE or FALSE
+#
+# One row per unique sample_id. You can generate it from the union BED once:
+#
+#   ( echo -e "sample_id\tIndividual_ID\tHaplotype\tis_primary_sample"; \
+#     bgzip -dc <union.bed.gz> | \
+#     awk -F'\t' 'NR==1 {for(i=1;i<=NF;i++) c[$i]=i; next} \
+#                 {print $c["sample_id"]"\t"$c["Individual_ID"]"\t"$c["Haplotype"]"\t"$c["is_primary_sample"]}' | \
+#     sort -u ) > samples.tsv
+#
+if "samples_tsv" not in config:
+    raise ValueError(
+        "config is missing required key 'samples_tsv' (small TSV of sample_id / Individual_ID / Haplotype / is_primary_sample)"
+    )
+_SAMPLES_TSV = config["samples_tsv"]
 
-    return df
+
+def _open_text(path):
+    if path.endswith(".gz"):
+        return gzip.open(path, "rt", newline="")
+    return open(path, "r", newline="")
 
 
-SAMPLES = load_sample_table()
+def _load_samples_tsv(path):
+    """Read the small samples sidecar; returns (haplotype_samples, sample_ids)."""
+    haplotype_samples = set()
+    sample_ids = set()
+    with _open_text(path) as fh:
+        reader = csv.DictReader(fh, delimiter="\t")
+        required = {"sample_id", "Individual_ID", "Haplotype", "is_primary_sample"}
+        missing = required - set(reader.fieldnames or [])
+        if missing:
+            raise ValueError(
+                f"samples_tsv {path} missing required columns: {sorted(missing)}"
+            )
+        for row in reader:
+            sid = row["sample_id"].strip()
+            if not sid:
+                continue
+            sample_ids.add(sid)
+            if row["is_primary_sample"].strip().upper() == "TRUE":
+                haplotype_samples.add(
+                    f"{row['Individual_ID'].strip()}_{row['Haplotype'].strip()}"
+                )
+    return sorted(haplotype_samples), sorted(sample_ids)
 
 
-# Helper functions to get file paths
-def get_assembly(wildcards):
-    """Get assembly path for a given sample_id"""
-    row = SAMPLES[SAMPLES["sample_id"] == wildcards.sample_id]
-    return row["assembly"].values[0]
+HAPLOTYPE_SAMPLES, SAMPLE_IDS = _load_samples_tsv(_SAMPLES_TSV)
 
 
-def get_re_bed(wildcards):
-    """Get RE bed file path for a given sample_id"""
-    row = SAMPLES[SAMPLES["sample_id"] == wildcards.sample_id]
-    return row["re_bed"].values[0]
+def get_haplotype_samples():
+    """Ordered list of haplotype_sample keys (e.g. HG002_1, HG002_2, ...)."""
+    return HAPLOTYPE_SAMPLES
 
 
 def get_all_sample_ids():
-    """Get all unique sample IDs"""
-    return SAMPLES["sample_id"].tolist()
+    """All unique sample_ids (primary and non-primary)."""
+    return SAMPLE_IDS
 
 
-def get_all_assemblies():
-    """Get all assembly paths"""
-    return SAMPLES["assembly"].tolist()
+# --- optional ft_bam side-table (for pileup) ---------------------------------
+
+def _load_ft_bam_table():
+    """
+    Optional TSV mapping sample_id -> ft_bam path. Enables the pileup rules.
+
+    Format:
+        sample_id\tft_bam
+        HG002_HG002_1\t/path/to/HG002.dsa.bam
+        ...
+    """
+    path = config.get("ft_bam_table")
+    if not path:
+        return {}
+    df = pl.read_csv(path, separator="\t", has_header=True)
+    need = {"sample_id", "ft_bam"}
+    missing = need - set(df.columns)
+    if missing:
+        raise ValueError(f"ft_bam_table at {path} missing columns: {missing}")
+    return dict(zip(df.get_column("sample_id"), df.get_column("ft_bam")))
 
 
-def get_all_re_beds():
-    """Get all RE bed file paths"""
-    return SAMPLES["re_bed"].tolist()
-
-
-def get_all_assembly_fais():
-    """Get all assembly FAI file paths"""
-    return [asm + ".fai" for asm in SAMPLES["assembly"].tolist()]
-
-
-def sd_filtering_enabled():
-    """Check if SD filtering is enabled (sd_bed is configured)"""
-    return config["filtering"].get("sd_bed") is not None
+_FT_BAM = _load_ft_bam_table()
 
 
 def has_ft_bam(sample_id):
-    """Check if a sample_id has an ft_bam configured"""
-    if "ft_bam" not in SAMPLES.columns:
-        return False
-    row = SAMPLES[SAMPLES["sample_id"] == sample_id]
-    if row.empty:
-        return False
-    bam_path = row["ft_bam"].values[0]
-    return pd.notna(bam_path) and bam_path != ""
+    return sample_id in _FT_BAM
 
 
 def get_ft_bam(wildcards):
-    """Get ft_bam path for a given sample_id"""
-    row = SAMPLES[SAMPLES["sample_id"] == wildcards.sample_id]
-    return row["ft_bam"].values[0]
+    return _FT_BAM[wildcards.sample_id]
 
 
 def get_sample_ids_with_ft_bam():
-    """Get sample IDs that have ft_bam configured"""
-    if "ft_bam" not in SAMPLES.columns:
-        return []
-    return [
-        sid for sid in get_all_sample_ids()
-        if has_ft_bam(sid)
-    ]
+    return [sid for sid in SAMPLE_IDS if sid in _FT_BAM]
 
 
 def ft_pileup_enabled():
-    """Check if any samples have ft_bam configured"""
-    return len(get_sample_ids_with_ft_bam()) > 0
-
-
-def get_sample_from_sample_id(sample_id):
-    """Extract sample name from sample_id (e.g., 'HG002_hap1' -> 'HG002')"""
-    return sample_id.rsplit("_", 1)[0]
-
-
-def get_haplotype_from_sample_id(sample_id):
-    """Extract haplotype from sample_id (e.g., 'HG002_hap1' -> 'hap1')"""
-    return sample_id.rsplit("_", 1)[1]
-
-
-def get_haplotype_number(sample_id):
-    """Get haplotype number (1 or 2) from sample_id"""
-    haplotype = get_haplotype_from_sample_id(sample_id)
-    return "1" if haplotype == "hap1" else "2"
-
-
-def get_contig_patterns_for_sample_id(sample_id):
-    """
-    Get regex patterns that match contigs for a given sample_id.
-
-    Returns a list of compiled regex patterns for matching contig names.
-
-    Supported naming conventions:
-    - HG00097#1#contig or HG00097#2#contig (HPRC style)
-    - chr*_PATERNAL or chr*_MATERNAL (T2T style, only for HG002)
-    """
-    import re
-
-    sample = get_sample_from_sample_id(sample_id)
-    haplotype = get_haplotype_from_sample_id(sample_id)
-    hap_num = get_haplotype_number(sample_id)
-
-    patterns = []
-
-    # Pattern 1: HPRC style - HG00097#1#contig
-    patterns.append(re.compile(rf"^{re.escape(sample)}#{hap_num}#"))
-
-    # Pattern 2: T2T style - chr*_PATERNAL or chr*_MATERNAL
-    # Only apply this pattern for HG002 (the T2T reference sample)
-    if sample == "HG002":
-        if haplotype == "hap1":
-            patterns.append(re.compile(r"_PATERNAL$"))
-        else:
-            patterns.append(re.compile(r"_MATERNAL$"))
-
-    return patterns
-
-
-def contig_matches_sample_id(contig_name, sample_id):
-    """Check if a contig name belongs to a given sample_id."""
-    patterns = get_contig_patterns_for_sample_id(sample_id)
-    return any(p.search(contig_name) for p in patterns)
-
-
-# Output directory helpers
-OUTPUT = config.get("output_dir", "results")
-TEMP = config.get("temp_dir", "temp")
-
-
-def output_path(*args):
-    """Construct output path"""
-    return str(Path(OUTPUT) / Path(*args))
-
-
-def temp_path(*args):
-    """Construct temp path"""
-    return str(Path(TEMP) / Path(*args))
+    return len(_FT_BAM) > 0

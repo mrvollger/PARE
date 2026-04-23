@@ -12,6 +12,29 @@ from typing import Optional, Dict, Any, List
 import pandas as pd
 
 
+# --- Union-BED-era RE_ID helpers --------------------------------------------
+#
+# After the union-BED rewrite, PAF query/target names are:
+#     {sample_id}__{consensus_peak_id}
+# where `__` (double underscore) is the separator.
+#
+# sample_id itself can contain single underscores (e.g.
+# HG002_PS01015_PacBio_HG002_1), so the split uses the *last* occurrence of the
+# double-underscore separator.
+
+RE_ID_SEP = "__"
+
+
+def split_re_id(re_id: str) -> Optional[tuple]:
+    """Split a union-BED RE_ID into (sample_id, consensus_peak_id) or None."""
+    if re_id is None:
+        return None
+    idx = re_id.rfind(RE_ID_SEP)
+    if idx < 0:
+        return None
+    return re_id[:idx], re_id[idx + len(RE_ID_SEP):]
+
+
 def parse_contig_name(contig_name: str) -> Dict[str, str]:
     """
     Parse contig name to extract sample ID and haplotype information.

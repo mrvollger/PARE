@@ -1,16 +1,18 @@
 """
-Rules for running ft pileup on clustered RE regions to extract chromatin information.
+Optional pileup of ft_bam coverage on clustered RE regions.
 
-These rules are conditional on ft_bam being present in the sample table.
+Enabled when `ft_bam_table` (a TSV mapping sample_id -> ft_bam path) is set
+in the config. The annotated_res.bed from graph.smk provides per-sample_id
+rows via column 7 (sample_id).
 """
 
 
 rule split_annotated_res_by_sample:
-    """Split annotated REs BED by sample_id for per-sample pileup."""
+    """Extract this sample_id's REs from annotated_res.bed."""
     input:
         bed=rules.paf_to_graphml.output.annotated_res,
     output:
-        bed=temp("temp/pileup/{sample_id}.res.bed"),
+        bed=temp(temp_path("pileup/{sample_id}.res.bed")),
     log:
         "logs/pileup/split_res_{sample_id}.log",
     threads: 1
@@ -19,29 +21,20 @@ rule split_annotated_res_by_sample:
         runtime=10,
     params:
         sample_id=lambda wc: wc.sample_id,
-    run:
-        with open(input.bed) as f_in, open(output.bed, "w") as f_out:
-            for line in f_in:
-                if line.startswith("#"):
-                    continue
-                fields = line.strip().split("\t")
-                if len(fields) < 5:
-                    continue
-                chrom = fields[0]
-                # Check if this RE belongs to this sample/haplotype
-                if contig_matches_sample_id(chrom, params.sample_id):
-                    # Output: chrom, start, end, re_id (use re_id as name for ft pileup)
-                    f_out.write(f"{fields[0]}\t{fields[1]}\t{fields[2]}\t{fields[3]}\n")
+    shell:
+        r"""
+        awk -F'\t' -v sid={params.sample_id} 'BEGIN{{OFS="\t"}} $1 !~ /^#/ && $7==sid {{print $1,$2,$3,$4}}' \
+            {input.bed} > {output.bed} 2> {log}
+        """
 
 
 rule ft_pileup:
-    """Run ft pileup on RE regions to extract chromatin accessibility."""
     input:
-        bed="temp/pileup/{sample_id}.res.bed",
+        bed=rules.split_annotated_res_by_sample.output.bed,
         bam=get_ft_bam,
         bai=lambda wc: get_ft_bam(wc) + ".bai",
     output:
-        pileup=temp("temp/pileup/{sample_id}.pileup.bed"),
+        pileup=temp(temp_path("pileup/{sample_id}.pileup.bed")),
     log:
         "logs/pileup/ft_pileup_{sample_id}.log",
     conda:
@@ -67,17 +60,10 @@ rule ft_pileup:
 
 
 rule filter_pileup_peaks:
-    """Filter pileup to best peak per RE.
-
-    For each continuous run of the same RE name:
-    1. Find max score
-    2. Break ties with max fire_coverage
-    3. Break ties with most central position
-    """
     input:
         pileup=rules.ft_pileup.output.pileup,
     output:
-        peaks=pipe("temp/pileup/{sample_id}.peaks.bed"),
+        peaks=pipe(temp_path("pileup/{sample_id}.peaks.bed")),
     log:
         "logs/pileup/filter_peaks_{sample_id}.log",
     conda:
@@ -91,12 +77,11 @@ rule filter_pileup_peaks:
 
 
 rule compress_peaks:
-    """Compress peaks with bgzip and create index."""
     input:
         bed=rules.filter_pileup_peaks.output.peaks,
     output:
-        gz="results/pileup/{sample_id}.peaks.bed.gz",
-        index="results/pileup/{sample_id}.peaks.bed.gz.gzi",
+        gz=output_path("pileup/{sample_id}.peaks.bed.gz"),
+        index=output_path("pileup/{sample_id}.peaks.bed.gz.gzi"),
     log:
         "logs/pileup/compress_peaks_{sample_id}.log",
     conda:
@@ -111,40 +96,16 @@ rule compress_peaks:
         """
 
 
-rule index_pileup:
-    """Index the pileup output."""
-    input:
-        pileup=rules.ft_pileup.output.pileup,
-    output:
-        tbi="results/pileup/{sample_id}.pileup.bed.gz.tbi",
-    log:
-        "logs/pileup/index_{sample_id}.log",
-    conda:
-        "../envs/bfx.yml"
-    threads: 1
-    resources:
-        mem_mb=1024,
-        runtime=10,
-    shell:
-        """
-        tabix -p bed {input.pileup} 2> {log}
-        """
-
-
 rule merge_all_peaks:
-    """Merge all peak files into a single sorted bed file.
-
-    Each re_id is unique across all samples, so we can simply concatenate.
-    Output is bgzipped and tabix indexed.
-    """
+    """Concatenate per-sample peaks into one sorted bgzipped + tabix'd file."""
     input:
         peaks=expand(
-            "results/pileup/{sample_id}.peaks.bed.gz",
+            output_path("pileup/{sample_id}.peaks.bed.gz"),
             sample_id=get_sample_ids_with_ft_bam(),
         ),
     output:
-        bed="results/pileup/all_peaks.bed.gz",
-        tbi="results/pileup/all_peaks.bed.gz.tbi",
+        bed=output_path("pileup/all_peaks.bed.gz"),
+        tbi=output_path("pileup/all_peaks.bed.gz.tbi"),
     log:
         "logs/pileup/merge_all_peaks.log",
     conda:
@@ -156,10 +117,7 @@ rule merge_all_peaks:
     shell:
         """
         (
-            # Header from first file
             gzip -dc {input.peaks[0]} | head -1 || true
-
-            # Data from all files (skip headers), sort by chrom and position
             for f in {input.peaks}; do
                 gzip -dc "$f" | tail -n +2
             done | sort -k1,1 -k2,2n
@@ -169,17 +127,13 @@ rule merge_all_peaks:
 
 
 rule merge_peaks_with_annotations:
-    """Merge peak data with annotated REs to add cluster_id.
-
-    Joins peaks (keyed by re_id in name column) with annotated_res.bed.
-    Verifies 1:1 mapping between re_id and peaks.
-    """
+    """Join peaks (keyed by re_id) with annotated_res.bed to add cluster_id."""
     input:
         peaks=rules.merge_all_peaks.output.bed,
         annotated_res=rules.paf_to_graphml.output.annotated_res,
     output:
-        bed="results/pileup/peaks_with_clusters.bed.gz",
-        tbi="results/pileup/peaks_with_clusters.bed.gz.tbi",
+        bed=output_path("pileup/peaks_with_clusters.bed.gz"),
+        tbi=output_path("pileup/peaks_with_clusters.bed.gz.tbi"),
     log:
         "logs/pileup/merge_peaks_with_annotations.log",
     conda:
@@ -190,27 +144,3 @@ rule merge_peaks_with_annotations:
         runtime=30,
     script:
         "../scripts/merge_peaks_with_annotations.py"
-
-
-rule paralog_accessibility_analysis:
-    """Run exploratory analysis of paralog chromatin accessibility variance."""
-    input:
-        peaks=rules.merge_peaks_with_annotations.output.bed,
-        rmd="analysis/paralog_accessibility.Rmd",
-    output:
-        html="results/analysis/paralog_accessibility.html",
-        figures=directory("results/analysis/figures"),
-    log:
-        "logs/analysis/paralog_accessibility.log",
-    conda:
-        "../envs/r.yml"
-    threads: 1
-    resources:
-        mem_mb=8192,
-        runtime=60,
-    shell:
-        """
-        mkdir -p results/analysis
-        Rscript -e "rmarkdown::render('analysis/paralog_accessibility.Rmd', output_dir='results/analysis')" 2>&1 | tee ../{log}
-        mv figures results/analysis/ 2>/dev/null || true
-        """

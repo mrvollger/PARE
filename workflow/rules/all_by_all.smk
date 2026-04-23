@@ -1,43 +1,46 @@
 """
-Rules for all-vs-all RE alignment to get pairwise sequence identity.
+Cross-haplotype_sample RE-to-RE identity matrix.
 
-This module handles:
-1. Running all-vs-all minimap2 alignment on RE sequences
-2. Annotating alignments with cluster IDs and calculating identity
-
-RE sequences (both annotated and implicit) are extracted in the graph.smk
-paf_to_graphml rule, which outputs results/graphs/annotated_res.fa
+This takes the merged unslopped FASTA (one entry per primary sample_id x
+consensus_peak_id) and runs all-vs-all minimap2 to get pairwise sequence
+identity across haplotype_samples (the within-haplotype-sample alignments in
+align.smk are for paralog discovery; this step is for cross-sample comparison
+on the *called-peak* sequences, not flanking regions).
 """
+
+
+rule merge_all_unslopped_fastas:
+    """
+    Concatenate all per-haplotype_sample unslopped FASTAs.
+    """
+    input:
+        fastas=expand(
+            temp_path("sequences/{haplotype_sample}.unslopped.fa"),
+            haplotype_sample=get_haplotype_samples(),
+        ),
+    output:
+        fasta=temp(temp_path("all_by_all/unslopped.fa")),
+    log:
+        "logs/all_by_all/merge_unslopped.log",
+    threads: 1
+    resources:
+        mem_mb=2048,
+        runtime=10,
+    shell:
+        """
+        cat {input.fastas} > {output.fasta} 2> {log}
+        """
 
 
 rule align_re_to_re:
     """
-    All-vs-all alignment of RE sequences to get pairwise sequence identity.
-
-    This aligns all RE sequences (annotated + implicit) against themselves to find
-    direct RE-to-RE alignments with true sequence identity scores. Used for
-    correlating sequence divergence with chromatin accessibility variance.
-
-    Input includes both:
-    - Annotated REs (from original RE BED files)
-    - Implicit REs (discovered during graph construction)
-
-    Key parameters for short sequences (50-10,000bp REs):
-    - -X: All-vs-all mode (equivalent to -DP --dual=no --no-long-join)
-          Skips self mappings and redundant A->B/B->A pairs
-    - -k 11: Smaller k-mer for better sensitivity on short sequences
-    - -w 5: Smaller window for denser minimizer sampling
-    - -n 2: Allow chains with only 2 minimizers (short sequences)
-    - -m 20: Lower chaining score threshold for short alignments
-    - -s 0: No minimum DP score threshold to capture small REs
-    - --eqx: Use =/X CIGAR operators for accurate identity calculation
-
-    Note: -N and -p have no effect when -X is used (all chains retained)
+    All-vs-all minimap2 on the merged unslopped RE sequences.
+    Small-k / dense minimizers are tuned for 50-10kb peak sequences.
     """
     input:
-        fasta=rules.merge_annotated_res_fastas.output.fasta,
+        fasta=rules.merge_all_unslopped_fastas.output.fasta,
     output:
-        paf=temp("temp/all_by_all/re_alignments.paf"),
+        paf=temp(temp_path("all_by_all/re_alignments.paf")),
     log:
         "logs/all_by_all/align_re_to_re.log",
     conda:
@@ -66,20 +69,15 @@ rule align_re_to_re:
 
 rule annotate_re_to_re_alignments:
     """
-    Annotate RE-to-RE alignments with cluster IDs and filter.
-
-    - Parses RE IDs from sequence names (format: chrom_start_end or IMPLICIT_chrom_start_end)
-    - Joins with cluster assignments from annotated_res.bed
-    - Removes self-alignments (same RE to itself)
-    - Calculates sequence identity from alignment stats
-    - Outputs alignments with cluster info for downstream analysis
+    Join with cluster assignments and emit a deduped pairwise identity TSV.
     """
     input:
         paf=rules.align_re_to_re.output.paf,
-        annotated_res=rules.paf_to_graphml.output.annotated_res,
+        re_clusters=rules.paf_to_graphml.output.re_clusters,
+        re_index=rules.extract_union_sequences.output.re_index,
     output:
-        paf="results/all_by_all/re_alignments_with_clusters.paf.gz",
-        tsv="results/all_by_all/re_pairwise_identity.tsv.gz",
+        paf=output_path("all_by_all/re_alignments_with_clusters.paf.gz"),
+        tsv=output_path("all_by_all/re_pairwise_identity.tsv.gz"),
     log:
         "logs/all_by_all/annotate_alignments.log",
     conda:

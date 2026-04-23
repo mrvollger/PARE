@@ -26,11 +26,23 @@ def snakemake_main():
 
     try:
         print(f"Loading annotated REs: {annotated_res_file}", file=sys.stderr)
+        # annotated_res.bed schema (from paf_to_graph.py):
+        #   #asm_chr, asm_start, asm_end, re_id, cluster_id, consensus_peak_id,
+        #   sample_id, haplotype_sample, Individual_ID, Haplotype,
+        #   is_peak, is_primary_sample
         annotations = pl.read_csv(
             annotated_res_file,
             separator="\t",
-            has_header=False,
-            new_columns=["chrom", "start", "end", "re_id", "cluster_id", "sample", "haplotype"],
+            has_header=True,
+            comment_prefix=None,
+        )
+        # strip leading '#' from first column name if present
+        first = annotations.columns[0]
+        if first.startswith("#"):
+            annotations = annotations.rename({first: first.lstrip("#")})
+        # normalise to the old expected column names
+        annotations = annotations.rename(
+            {"asm_chr": "chrom", "asm_start": "start", "asm_end": "end"}
         )
         print(f"Annotations loaded: {len(annotations)} rows", file=sys.stderr)
 
@@ -97,13 +109,13 @@ def snakemake_main():
             # When hap1: H1 is ref, H2 is alt
             # When hap2: H2 is ref, H1 is alt
             rename_exprs.append(
-                pl.when(pl.col("haplotype") == "hap1")
+                pl.when(pl.col("Haplotype").cast(pl.Utf8) == "1")
                 .then(pl.col(col))
                 .otherwise(pl.col(col.replace("_H1", "_H2")))
                 .alias(ref_name)
             )
             rename_exprs.append(
-                pl.when(pl.col("haplotype") == "hap1")
+                pl.when(pl.col("Haplotype").cast(pl.Utf8) == "1")
                 .then(pl.col(col.replace("_H1", "_H2")))
                 .otherwise(pl.col(col))
                 .alias(alt_name)

@@ -1,74 +1,31 @@
 """
-Rules for aligning RE sequences to all assemblies to find paralogs
+Per-haplotype_sample all-vs-all alignment of slopped RE sequences.
+
+Each haplotype_sample = (Individual_ID, Haplotype) is aligned to itself to
+discover paralog pairs at the consensus_peak_id level. Paralogs found in any
+haplotype_sample are unioned downstream to produce the final consensus-peak
+paralog graph.
+
+Input queries are already in slop-local coordinates (0..slop_seq length). The
+RE_ID is encoded in the sequence name (both query and target); downstream code
+parses it back to sample_id / consensus_peak_id.
 """
 
 
-rule merge_all_re_sequences:
+rule align_within_haplotype_sample:
     """
-    Merge all RE sequences (with slop/flanking) from all samples into a single FASTA.
-    Sequence names already contain sample_id prefix from bedtools getfasta -name.
-    Used for RE-to-genome alignments where flanking helps with mapping.
+    minimap2 all-vs-all on one haplotype_sample's slopped sequences.
+
+    -X enables all-vs-all overlap mode (skips self-mappings and redundant
+    A->B/B->A pairs). Parameters follow the existing RE-to-RE preset in
+    all_by_all.smk (small k, dense minimizers).
     """
     input:
-        fastas=expand(
-            rules.extract_re_sequences.output.fasta, sample_id=get_all_sample_ids()
-        ),
+        fasta=temp_path("sequences/{haplotype_sample}.slop.fa"),
     output:
-        fasta="temp/merged_re_sequences.fa",
+        paf=temp(temp_path("alignments/{haplotype_sample}.paf")),
     log:
-        "logs/merge_sequences/all.log",
-    threads: 1
-    resources:
-        mem_mb=2048,
-        runtime=10,
-    shell:
-        """
-        cat {input.fastas} > {output.fasta} 2> {log}
-        """
-
-
-rule merge_all_re_sequences_unslopped:
-    """
-    Merge all exact RE sequences (without slop/flanking) from all samples.
-    Used for RE-to-RE all-vs-all alignments where we want true sequence identity
-    between the actual regulatory elements, not including flanking sequence.
-    """
-    input:
-        fastas=expand(
-            rules.extract_re_sequences.output.fasta_unslopped,
-            sample_id=get_all_sample_ids(),
-        ),
-    output:
-        fasta="temp/merged_re_sequences.unslopped.fa",
-    log:
-        "logs/merge_sequences/all_unslopped.log",
-    threads: 1
-    resources:
-        mem_mb=2048,
-        runtime=10,
-    shell:
-        """
-        cat {input.fastas} > {output.fasta} 2> {log}
-        """
-
-
-rule align_all_res_to_assembly:
-    """
-    Align all merged RE sequences to each target assembly using minimap2.
-
-    Key parameters:
-    -N: Report up to N secondary alignments (finds paralogs)
-    -p: Secondary threshold - reports if score >= primary * p
-    --eqx: Output = for match, X for mismatch (better identity calculation)
-    -k/-w: k-mer and window size optimized for short sequences
-    """
-    input:
-        query=rules.merge_all_re_sequences.output.fasta,
-        target=get_assembly,
-    output:
-        paf=temp("temp/alignments/all_REs_vs_{sample_id}.paf"),
-    log:
-        "logs/align/all_REs_vs_{sample_id}.log",
+        "logs/align/{haplotype_sample}.log",
     conda:
         "../envs/bfx.yml"
     threads: config["alignment"]["threads"]
@@ -76,98 +33,42 @@ rule align_all_res_to_assembly:
         mem_mb=get_mem_mb,
         runtime=240,
     params:
-        preset=config["alignment"]["minimap_preset"],
-        max_sec=config["alignment"]["max_secondary"],
-        sec_threshold=config["alignment"]["secondary_threshold"],
         kmer=config["alignment"]["kmer_size"],
         window=config["alignment"]["window_size"],
     shell:
         """
         minimap2 \
-            -x {params.preset} \
+            -X \
             -c \
             --eqx \
-            --secondary==yes \
-            -s 20 \
-            -N {params.max_sec} \
-            -p {params.sec_threshold} \
-            -t {threads} \
             -k {params.kmer} \
             -w {params.window} \
-            {input.target} \
-            {input.query} \
-            > {output.paf} 2> {log}
-        """
-
-
-rule adjust_paf_coordinates:
-    """
-    Adjust PAF coordinates from extracted sequence space to original assembly space.
-    Changes query name from extracted RE name to chromosome name,
-    and adjusts coordinates to represent positions on the full chromosome.
-    """
-    input:
-        paf=rules.align_all_res_to_assembly.output.paf,
-        fai=rules.merge_assembly_fais.output.fai,
-    output:
-        paf=temp("temp/alignments/all_REs_vs_{sample_id}.adjusted.paf"),
-    log:
-        "logs/adjust_paf/all_REs_vs_{sample_id}.log",
-    conda:
-        "../envs/python.yml"
-    threads: 1
-    resources:
-        mem_mb=4096,
-        runtime=30,
-    script:
-        "../scripts/adjust_paf_for_slop.py"
-
-
-rule liftover_trim_alignments:
-    """
-    Use rustybam liftover to trim alignments back to original RE coordinates.
-    Uses --qbed to trim based on query (RE) coordinates, not target assembly.
-    This removes alignments that only match flanking sequence from the slop
-    and trims both coordinates and CIGAR strings accordingly.
-    """
-    input:
-        paf=rules.adjust_paf_coordinates.output.paf,
-        bed=rules.merge_unslopped_beds.output.bed,
-    output:
-        paf=temp("temp/alignments/all_REs_vs_{sample_id}.trimmed.paf"),
-    log:
-        "logs/liftover/all_REs_vs_{sample_id}.log",
-    conda:
-        "../envs/bfx.yml"
-    threads: 1
-    resources:
-        mem_mb=4096,
-        runtime=60,
-    shell:
-        """
-        rb liftover \
-            --qbed \
-            --bed {input.bed} \
-            {input.paf} \
-            | awk 'BEGIN{{OFS="\\t"}} {{$12=255; print}}' \
-            | sort \
-            | uniq \
+            -n 2 \
+            -m 20 \
+            -s 0 \
+            -t {threads} \
+            {input.fasta} \
+            {input.fasta} \
             > {output.paf} 2> {log}
         """
 
 
 rule filter_alignments:
     """
-    Filter trimmed alignments based on identity and coverage thresholds.
-    Classify each alignment as 'self', 'allelic', or 'paralog'.
-    Output PAF format with filtered alignments and ct:Z: classification tag.
+    Filter by identity / coverage and add classification tags.
+
+    All alignments are within a single haplotype_sample, so classification
+    reduces to 'paralog' (different consensus_peak_id within same haplotype
+    sample); self-mappings are already skipped by -X. The classifier still runs
+    to be robust to future modes.
     """
     input:
-        paf=rules.liftover_trim_alignments.output.paf,
+        paf=rules.align_within_haplotype_sample.output.paf,
+        re_index=rules.extract_union_sequences.output.re_index,
     output:
-        paf="results/filtered_alignments/all_REs_vs_{sample_id}.paf",
+        paf=temp(temp_path("filtered/{haplotype_sample}.paf")),
     log:
-        "logs/filter_alignments/all_REs_vs_{sample_id}.log",
+        "logs/filter_alignments/{haplotype_sample}.log",
     conda:
         "../envs/python.yml"
     threads: 1
@@ -181,3 +82,24 @@ rule filter_alignments:
         "../scripts/filter_paf.py"
 
 
+rule merge_filtered_pafs:
+    """
+    Concatenate all per-haplotype_sample filtered PAFs into one unified file.
+    """
+    input:
+        pafs=expand(
+            temp_path("filtered/{haplotype_sample}.paf"),
+            haplotype_sample=get_haplotype_samples(),
+        ),
+    output:
+        paf=output_path("filtered_alignments/all.paf"),
+    log:
+        "logs/merge_filtered_pafs.log",
+    threads: 1
+    resources:
+        mem_mb=2048,
+        runtime=20,
+    shell:
+        """
+        cat {input.pafs} > {output.paf} 2> {log}
+        """
